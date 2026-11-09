@@ -1,10 +1,13 @@
 /** One API transport for every feature. The access token stays in memory. */
 export class ApiRequestError extends Error {
   status
-  constructor(message, status) {
+  constructor(message, status, { code, request_id, details } = {}) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
+    this.code = code
+    this.request_id = request_id
+    this.details = details
   }
 }
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(
@@ -41,14 +44,18 @@ export async function apiRequest(path, options = {}) {
     )
   }
   if (!response.ok) {
-    let message = 'Something went wrong. Please try again.'
+    let error
     try {
       const payload = await response.json()
-      message = payload.error?.message || message
+      error = payload?.error
     } catch {
       // Some API errors intentionally have no JSON body.
     }
-    throw new ApiRequestError(message, response.status)
+    throw new ApiRequestError(
+      error?.message || 'Something went wrong. Please try again.',
+      response.status,
+      error ?? undefined,
+    )
   }
   if (response.status === 204 || response.status === 202) return undefined
   if (options.responseType === 'blob') return await response.blob()

@@ -110,41 +110,151 @@ export function createRoadmap(organizationId, input) {
     },
   )
 }
-const versionPath = (organizationId, roadmapId) =>
-  `/organizations/${encodeURIComponent(organizationId)}/roadmaps/${encodeURIComponent(roadmapId)}/versions`
+function encodeRoadmapPathId(id) {
+  const segment = encodeURIComponent(id)
+  if (segment === '.' || segment === '..') {
+    throw new TypeError('Invalid roadmap path ID')
+  }
+  return segment
+}
+
+const versionsPath = (organizationId, roadmapId) =>
+  `/organizations/${encodeRoadmapPathId(organizationId)}/roadmaps/${encodeRoadmapPathId(roadmapId)}/versions`
+
+const versionPath = (organizationId, roadmapId, versionId) =>
+  `${versionsPath(organizationId, roadmapId)}/${encodeRoadmapPathId(versionId)}`
+
+function revisionBody(revision) {
+  if (revision == null) {
+    throw new TypeError('A current roadmap version revision is required')
+  }
+  return { revision }
+}
+
+function decisionBody(revision, submissionId) {
+  const body = revisionBody(revision)
+  if (submissionId == null || submissionId === '') {
+    throw new TypeError('A pending roadmap submission ID is required')
+  }
+  return { ...body, submission_id: submissionId }
+}
+
+function postVersionAction(organizationId, roadmapId, versionId, action, body) {
+  return apiRequest(
+    `${versionPath(organizationId, roadmapId, versionId)}/${action}`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+}
 
 export function listRoadmapVersions(organizationId, roadmapId) {
-  return apiRequest(versionPath(organizationId, roadmapId))
+  return apiRequest(versionsPath(organizationId, roadmapId))
 }
-export function saveRoadmapDraft(organizationId, roadmapId, versionId, phases) {
-  return apiRequest(
-    `${versionPath(organizationId, roadmapId)}/${encodeURIComponent(versionId)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ phases }),
-    },
-  )
-}
-export function copyRoadmapVersion(organizationId, roadmapId, sourceVersionId) {
-  return apiRequest(versionPath(organizationId, roadmapId), {
-    method: 'POST',
-    body: JSON.stringify({ source_version_id: sourceVersionId }),
+export function saveRoadmapDraft(
+  organizationId,
+  roadmapId,
+  versionId,
+  phases,
+  revision,
+) {
+  return apiRequest(versionPath(organizationId, roadmapId, versionId), {
+    method: 'PUT',
+    body: JSON.stringify({ ...revisionBody(revision), phases }),
   })
 }
-export function publishRoadmapVersion(organizationId, roadmapId, versionId) {
-  return apiRequest(
-    `${versionPath(organizationId, roadmapId)}/${encodeURIComponent(versionId)}/publish`,
-    {
-      method: 'POST',
-    },
+export function copyRoadmapVersion(
+  organizationId,
+  roadmapId,
+  sourceVersionId,
+  revision,
+) {
+  return apiRequest(versionsPath(organizationId, roadmapId), {
+    method: 'POST',
+    body: JSON.stringify({
+      ...revisionBody(revision),
+      source_version_id: sourceVersionId,
+    }),
+  })
+}
+export function submitRoadmapVersion(
+  organizationId,
+  roadmapId,
+  versionId,
+  revision,
+) {
+  return postVersionAction(
+    organizationId,
+    roadmapId,
+    versionId,
+    'submit',
+    revisionBody(revision),
   )
 }
-export function archiveRoadmapVersion(organizationId, roadmapId, versionId) {
+export function approveRoadmapVersion(
+  organizationId,
+  roadmapId,
+  versionId,
+  revision,
+  submissionId,
+) {
+  return postVersionAction(
+    organizationId,
+    roadmapId,
+    versionId,
+    'approve',
+    decisionBody(revision, submissionId),
+  )
+}
+export function publishRoadmapVersion(
+  organizationId,
+  roadmapId,
+  versionId,
+  revision,
+  submissionId,
+) {
+  return postVersionAction(
+    organizationId,
+    roadmapId,
+    versionId,
+    'publish',
+    decisionBody(revision, submissionId),
+  )
+}
+export function rejectRoadmapVersion(
+  organizationId,
+  roadmapId,
+  versionId,
+  revision,
+  submissionId,
+  reason,
+) {
+  return postVersionAction(organizationId, roadmapId, versionId, 'reject', {
+    ...decisionBody(revision, submissionId),
+    reason,
+  })
+}
+export function archiveRoadmapVersion(
+  organizationId,
+  roadmapId,
+  versionId,
+  revision,
+) {
+  return postVersionAction(
+    organizationId,
+    roadmapId,
+    versionId,
+    'archive',
+    revisionBody(revision),
+  )
+}
+export function listRoadmapReviews(
+  organizationId,
+  roadmapId,
+  versionId,
+  { limit = 20, offset = 0 } = {},
+) {
+  const query = new URLSearchParams({ limit, offset })
   return apiRequest(
-    `${versionPath(organizationId, roadmapId)}/${encodeURIComponent(versionId)}/archive`,
-    {
-      method: 'POST',
-    },
+    `${versionPath(organizationId, roadmapId, versionId)}/reviews?${query}`,
   )
 }
 export function listCohorts(organizationId) {
