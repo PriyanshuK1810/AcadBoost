@@ -21,7 +21,7 @@ For a new checkout, create the ignored root and `backend-js/.env` files from the
 
 ## Node backend
 
-The Express API in `backend-js/` is the active runtime. Its 30 API routes and Prisma baseline have been verified against the existing PostgreSQL schema. The pre-baseline database backup is kept in the Git-ignored `local-backups/` directory. Set `OUTPOST_DATABASE_URL` in the ignored `backend-js/.env` file. Both the API and Prisma CLI accept the legacy Psycopg URL form. From `backend-js/`:
+Set `OUTPOST_DATABASE_URL` and the authentication settings from `backend-js/.env.example` in the ignored `backend-js/.env` file. The API and Prisma CLI accept the legacy Psycopg URL form. From `backend-js/`:
 
 ```powershell
 npm ci
@@ -34,20 +34,16 @@ npm run dev
 
 ## Database migrations
 
-The existing database was created by Alembic. Prisma migration `0_baseline` was compared against an isolated database, backed up, and marked applied without changing the existing tables. Never reset the local database or use `prisma db push` against it. From `backend-js/`, run `npx prisma migrate status` to inspect migrations and `npm run test:db` to check database access.
+Run `npx prisma migrate status` from `backend-js/` to inspect migrations. Use the versioned migrations for schema changes. See the coordinated rollout requirements in [ADR-009](docs/decisions/ADR-009-roadmap-review-approval.md).
 
-The frozen API compatibility contract is in [`docs/architecture/javascript-api-contract.md`](docs/architecture/javascript-api-contract.md).
+For integration verification, run `node scripts/verify-roadmap-review.mjs --full` from `backend-js/` with the local Compose services running. The harness provisions disposable resources and prints the path to its reports in the system temporary directory. Use `T04C_OUTPUT_DIR` to set a different report location.
 
 ## Frontend
-
-For selectable-text PDF import, review and roadmap publication, follow
-[the activity-plan guide](docs/ACTIVITY-PLANS.md). Uploaded PDFs stay in private
-MinIO storage; PostgreSQL stores extraction, review and draft conversion state.
 
 Run the frontend setup and quality gate from `frontend/`:
 
 ```powershell
-npm install
+npm ci
 npm run format:check
 npm run lint
 npm test
@@ -98,6 +94,8 @@ Invoke-WebRequest http://127.0.0.1:9000/minio/health/live
 
 The S3 API is available at `http://127.0.0.1:9000`, and the browser console is available at `http://127.0.0.1:9001`. Sign in with `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` from the root `.env` file. MinIO stores objects in the `minio_data` named volume.
 
+For PDF imports, configure `OUTPOST_OBJECT_ENDPOINT` and `OUTPOST_OBJECT_BUCKET` in `backend-js/.env`. Set `OUTPOST_OBJECT_ACCESS_KEY` and `OUTPOST_OBJECT_SECRET_KEY` to the local MinIO user and password. The development API creates the private bucket on startup if it is missing.
+
 ## Local Mailpit
 
 Start and verify the local SMTP capture service from the repository root:
@@ -123,8 +121,4 @@ The Node backend image runs Express on port 8000. The frontend image serves the 
 
 ## Architecture records
 
-The governing build specification is in [`docs/OUTPOST-MASTER-BUILD-PROMPT.md`](docs/OUTPOST-MASTER-BUILD-PROMPT.md). Accepted architecture decisions are indexed in [`docs/OUTPOST-DECISIONS.md`](docs/OUTPOST-DECISIONS.md).
-
-## College review demonstration
-
-Open [the review walkthrough](docs/REVIEW-DEMO.md) for the local setup, five-minute presentation path, and a clear description of illustrative versus working features.
+Architecture decision records are in [`docs/decisions/`](docs/decisions/).

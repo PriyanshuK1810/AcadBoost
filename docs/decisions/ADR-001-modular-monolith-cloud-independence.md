@@ -6,7 +6,7 @@ Scope: Phase 0 architecture only.
 
 ## Context
 
-Outpost must run locally without AWS and later deploy to a cloud provider without rewriting domain logic. The [master build prompt](../OUTPOST-MASTER-BUILD-PROMPT.md), Layers 1–3, governs this decision. This record documents the approved architecture; it does not start Phase 1.
+Outpost must run locally without AWS and later deploy to a cloud provider without rewriting domain logic. The master build prompt, Layers 1–3, governs this decision. This record documents the approved architecture; it does not start Phase 1.
 
 ## Decision
 

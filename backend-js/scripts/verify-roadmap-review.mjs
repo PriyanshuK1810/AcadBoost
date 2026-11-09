@@ -3,7 +3,8 @@
 import fs from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import pg from 'pg';
 import { S3Client, CreateBucketCommand, ListObjectsV2Command, DeleteObjectsCommand, DeleteBucketCommand } from '@aws-sdk/client-s3';
 import { loadSettings } from '../src/core/config.js';
@@ -11,8 +12,11 @@ import { loadSettings } from '../src/core/config.js';
 const settings = loadSettings();
 const suffix = randomBytes(6).toString('hex');
 const database = `outpost_t04c_${suffix}`, bucket = `outpost-t04c-${suffix}`;
-const evidenceDir = resolve(process.env.T04C_OUTPUT_DIR || '../docs/verification/t04c');
+const evidenceDir = process.env.T04C_OUTPUT_DIR
+  ? resolve(process.env.T04C_OUTPUT_DIR)
+  : await fs.mkdtemp(join(tmpdir(), 'outpost-roadmap-review-'));
 await fs.mkdir(evidenceDir, { recursive: true });
+console.log(`Verification output: ${evidenceDir}`);
 const url = new URL(settings.databaseUrl); url.pathname = `/${database}`;
 const env = { ...process.env, OUTPOST_DATABASE_URL: url.href, T04C_DATABASE_URL: url.href, T04D_DATABASE_URL: url.href,
   T04D_EVIDENCE_DIR: evidenceDir,

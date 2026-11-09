@@ -9,7 +9,7 @@ Scope: Phase 0 curriculum version lifecycle, cohort assignment, and progress-ide
 
 Outpost lets coordinators create or import a curriculum, review it, publish it, assign it to a cohort, and improve later editions. Students must see a stable curriculum while tracking progress, and historical progress and analytics must remain interpretable after coordinators revise a roadmap.
 
-A mutable “current roadmap” would silently change the topics underneath existing cohorts and make recorded progress ambiguous. This record follows the [master build prompt](../OUTPOST-MASTER-BUILD-PROMPT.md), the tenant boundary in [ADR-002](ADR-002-organization-tenant-model.md), and authorization enforcement in [ADR-004](ADR-004-tenant-aware-authorization.md). It does not create schema, endpoints, imports, or product code.
+A mutable “current roadmap” would silently change the topics underneath existing cohorts and make recorded progress ambiguous. This record follows the master build prompt, the tenant boundary in [ADR-002](ADR-002-organization-tenant-model.md), and authorization enforcement in [ADR-004](ADR-004-tenant-aware-authorization.md). It does not create schema, endpoints, imports, or product code.
 
 ## Decision
 

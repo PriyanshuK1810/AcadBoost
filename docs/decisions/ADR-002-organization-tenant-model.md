@@ -8,7 +8,7 @@ Scope: Phase 0 tenant boundary and isolation invariants only.
 
 Outpost supports multiple colleges, departments, institutes, companies, and learning communities. A person may participate in more than one organization without becoming a different user. Each organization must control access to its own curriculum, cohorts, imports, activity, and analytics.
 
-A tenant boundary defines which organization's data an operation may access. In Outpost that boundary is `Organization`, not the logged-in user, a cohort, an authentication provider, or the deployment host. This record follows the [master build prompt](../OUTPOST-MASTER-BUILD-PROMPT.md) and [ADR-001](ADR-001-modular-monolith-cloud-independence.md); it does not introduce schema, endpoints, or application code.
+A tenant boundary defines which organization's data an operation may access. In Outpost that boundary is `Organization`, not the logged-in user, a cohort, an authentication provider, or the deployment host. This record follows the master build prompt and [ADR-001](ADR-001-modular-monolith-cloud-independence.md); it does not introduce schema, endpoints, or application code.
 
 ## Decision
 

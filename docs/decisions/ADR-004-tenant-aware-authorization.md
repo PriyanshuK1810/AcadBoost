@@ -8,7 +8,7 @@ Scope: Phase 0 authorization policy and enforcement boundaries only.
 
 Outpost authenticates one canonical user through the methods defined in [ADR-003](ADR-003-authentication-model.md), but identity alone does not grant product access. A user may hold different roles in several organizations, and tenant-owned resources may express their organization directly or through a parent chain defined by [ADR-002](ADR-002-organization-tenant-model.md).
 
-Authorization must remain consistent across API endpoints, application operations, background workers, list queries, and analytics. Scattered inline role checks would be difficult to audit and could allow a valid user to cross the organization boundary by substituting an identifier. This record follows the [master build prompt](../OUTPOST-MASTER-BUILD-PROMPT.md) and [ADR-001](ADR-001-modular-monolith-cloud-independence.md). It freezes the initial architecture; [ADR-006](ADR-006-organization-membership-management.md) records the Phase 13 role-permission matrix.
+Authorization must remain consistent across API endpoints, application operations, background workers, list queries, and analytics. Scattered inline role checks would be difficult to audit and could allow a valid user to cross the organization boundary by substituting an identifier. This record follows the master build prompt and [ADR-001](ADR-001-modular-monolith-cloud-independence.md). It freezes the initial architecture; [ADR-006](ADR-006-organization-membership-management.md) records the Phase 13 role-permission matrix.
 
 ## Decision
 

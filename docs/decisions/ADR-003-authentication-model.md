@@ -8,7 +8,7 @@ Scope: Authentication identity, credential, linking, and session invariants; Pha
 
 Outpost needs password, passwordless phone, and Google sign-in while preserving one canonical user identity. A person may add or remove authentication methods over time without duplicating their learning history or organization memberships. Authentication must remain separate from the organization-scoped authorization model defined by [ADR-002](ADR-002-organization-tenant-model.md).
 
-This record follows the [master build prompt](../OUTPOST-MASTER-BUILD-PROMPT.md) and [ADR-001](ADR-001-modular-monolith-cloud-independence.md). It freezes the approved model before storage and endpoint implementation; it does not create authentication code, schema, provider adapters, or secrets.
+This record follows the master build prompt and [ADR-001](ADR-001-modular-monolith-cloud-independence.md). It freezes the approved model before storage and endpoint implementation; it does not create authentication code, schema, provider adapters, or secrets.
 
 ## Decision
 
