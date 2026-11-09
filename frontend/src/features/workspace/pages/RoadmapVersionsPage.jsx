@@ -1,16 +1,18 @@
 import { listPlans } from '../activityPlanApi'
 import useUnsavedChanges from '../hooks/useUnsavedChanges'
 import { outlineProblems } from '../outlineValidation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { PageHeading } from '../components/WorkspaceUI'
+import ForestLandscapeArtwork from '../components/ForestLandscapeArtwork'
+import RoadmapStatusBadge from '../components/RoadmapStatusBadge'
 import {
   archiveRoadmapVersion,
   copyRoadmapVersion,
   listOrganizations,
   listRoadmapVersions,
-  publishRoadmapVersion,
   saveRoadmapDraft,
+  submitRoadmapVersion,
 } from '../learningApi'
 
 const editable = (phases) =>
@@ -41,6 +43,7 @@ export default function RoadmapVersionsPage() {
   const [search] = useSearchParams()
   const preferredOrg = search.get('organizationId')
   const [organizationId, setOrganizationId] = useState('')
+  const [organizationRole, setOrganizationRole] = useState('')
   const [sourcePlan, setSourcePlan] = useState(null)
   const [versions, setVersions] = useState([])
   const [activeId, setActiveId] = useState('')
@@ -51,9 +54,31 @@ export default function RoadmapVersionsPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [recovery, setRecovery] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
+  const dialogRef = useRef(null)
+  const submitTriggerRef = useRef(null)
+  const submissionPendingRef = useRef(false)
+  const selectedIdRef = useRef('')
   useUnsavedChanges(dirty)
   const active = versions.find((item) => item.version_id === activeId)
   const problems = outlineProblems(draft)
+  const canSubmit = ['owner', 'admin', 'coordinator'].includes(organizationRole)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    if (confirmation) {
+      if (!dialog.open) {
+        if (dialog.showModal) dialog.showModal()
+        else dialog.setAttribute('open', '')
+      }
+    } else if (dialog.open) {
+      if (dialog.close) dialog.close()
+      else dialog.removeAttribute('open')
+      submitTriggerRef.current?.focus()
+    }
+  }, [confirmation])
 
   useEffect(() => {
     let mounted = true
@@ -68,9 +93,11 @@ export default function RoadmapVersionsPage() {
             const rows = await listRoadmapVersions(organization.id, roadmapId)
             if (!mounted) return
             setOrganizationId(organization.id)
+            setOrganizationRole(organization.role)
             setVersions(rows)
             const chosen = rows.at(-1)
             setActiveId(chosen?.version_id || '')
+            selectedIdRef.current = chosen?.version_id || ''
             setDraft(chosen ? editable(chosen.phases) : [])
             setLoading(false)
             return
@@ -105,16 +132,19 @@ export default function RoadmapVersionsPage() {
     }
   }, [organizationId, roadmapId])
   function selectVersion(version) {
+    if (busy || confirmation) return
     if (dirty) {
       setError('Save your draft before switching versions.')
       return
     }
     setActiveId(version.version_id)
+    selectedIdRef.current = version.version_id
     setDraft(editable(version.phases))
     setDirty(false)
     setReviewing(false)
     setMessage('')
     setError('')
+    setRecovery(null)
   }
   function change(mutator) {
     setDraft((current) => {
@@ -132,66 +162,264 @@ export default function RoadmapVersionsPage() {
       ),
     )
     setActiveId(updated.version_id)
+    selectedIdRef.current = updated.version_id
     setDraft(editable(updated.phases))
     setDirty(false)
     setReviewing(false)
+    setRecovery(null)
   }
-  async function save() {
+  function requireRevision(version) {
+    if (Number.isInteger(version?.revision) && version.revision >= 0)
+      return version.revision
+    setError(
+      'This version needs current server information before you can continue.',
+    )
+    setRecovery({ kind: 'missing', latest: null })
+    return null
+  }
+  async function refreshVersions(selectedId, preserveDraft = false) {
+    const rows = await listRoadmapVersions(organizationId, roadmapId)
+    const selected = rows.find((item) => item.version_id === selectedId)
+    if (!selected)
+      throw new Error(
+        'The selected version is no longer available. Reload the page to continue.',
+      )
+    if (preserveDraft) {
+      setRecovery({ kind: 'save', latest: selected })
+    } else {
+      setVersions(rows)
+      setActiveId(selectedId)
+      selectedIdRef.current = selectedId
+      setDraft(editable(selected.phases))
+      setDirty(false)
+      setReviewing(false)
+      setRecovery(null)
+    }
+    return selected
+  }
+  async function reviewLatest() {
     setBusy(true)
     setError('')
     try {
-      replaceVersion(
-        await saveRoadmapDraft(organizationId, roadmapId, activeId, draft),
-      )
-      setMessage('Draft saved. Review it before publishing.')
+      await refreshVersions(activeId, dirty)
+      setMessage('Current server version loaded for review.')
     } catch (cause) {
       setError(cause.message)
     } finally {
       setBusy(false)
     }
   }
-  async function publish() {
+  function keepEditsOnLatest() {
+    const latest = recovery?.latest
+    if (!latest || latest.version_id !== activeId) return
+    setVersions((current) =>
+      current.map((item) => (item.version_id === activeId ? latest : item)),
+    )
+    setRecovery(null)
+    setError('')
+    setMessage(
+      'Your edits are retained. Review them against the latest version before saving.',
+    )
+  }
+  async function save() {
+    const revision = requireRevision(active)
+    if (revision === null || recovery) return
     setBusy(true)
     setError('')
     try {
       replaceVersion(
-        await publishRoadmapVersion(organizationId, roadmapId, activeId),
+        await saveRoadmapDraft(
+          organizationId,
+          roadmapId,
+          active.version_id,
+          draft,
+          revision,
+        ),
       )
-      setMessage('Version published. Cohorts can now be assigned to it.')
+      await refreshVersions(active.version_id)
+      setMessage('Draft saved. Review it before submitting for review.')
     } catch (cause) {
-      setError(cause.message)
+      if (cause.status === 409) {
+        setRecovery({ kind: 'save', latest: null })
+        setError(
+          'Roadmap changed. Someone updated this roadmap while you were editing. Your unsaved changes are still available.',
+        )
+      } else setError(cause.message)
     } finally {
       setBusy(false)
+    }
+  }
+  function openSubmission() {
+    if (dirty) {
+      setError(
+        'Save your changes first. Save the latest roadmap changes before submitting this version for review.',
+      )
+      return
+    }
+    if (
+      !canSubmit ||
+      active?.status !== 'draft' ||
+      busy ||
+      recovery ||
+      problems.length
+    )
+      return
+    const revision = requireRevision(active)
+    if (revision === null) return
+    setError('')
+    setConfirmation({ organizationId, versionId: active.version_id, revision })
+  }
+  async function submit() {
+    if (submissionPendingRef.current || !confirmation) return
+    const { organizationId: confirmedOrg, versionId, revision } = confirmation
+    if (
+      confirmedOrg !== organizationId ||
+      versionId !== active?.version_id ||
+      revision !== active.revision ||
+      active.status !== 'draft' ||
+      !canSubmit ||
+      dirty ||
+      busy ||
+      recovery ||
+      problems.length
+    ) {
+      setConfirmation(null)
+      setError(
+        'This draft changed before submission. Review and confirm it again.',
+      )
+      return
+    }
+    submissionPendingRef.current = true
+    setBusy(true)
+    setError('')
+    let submitted
+    try {
+      submitted = await submitRoadmapVersion(
+        organizationId,
+        roadmapId,
+        versionId,
+        revision,
+      )
+    } catch (cause) {
+      if (cause.status === 409) {
+        setRecovery({ kind: 'mutation', latest: null })
+        setError(
+          'This draft changed or was already submitted. Refresh it before trying again.',
+        )
+      } else if (cause.status === 401) {
+        setError(
+          'Your session has expired. Sign in again before submitting this version.',
+        )
+      } else if (cause.status === 403) {
+        setError('You do not have permission to submit this roadmap version.')
+      } else if (cause.status === 422) {
+        setError(cause.message)
+      } else {
+        setRecovery({ kind: 'mutation', latest: null })
+        setError(
+          'Submission could not be confirmed. Refresh the version to check its current status before trying again.',
+        )
+      }
+      setConfirmation(null)
+      return
+    } finally {
+      setBusy(false)
+      submissionPendingRef.current = false
+    }
+    setConfirmation(null)
+    setVersions((current) =>
+      current.map((item) => (item.version_id === versionId ? submitted : item)),
+    )
+    if (selectedIdRef.current === versionId) {
+      setDraft(editable(submitted.phases))
+      setDirty(false)
+      setReviewing(false)
+    }
+    setMessage(
+      'Submitted for review. This roadmap version is now awaiting review by an Owner or Admin.',
+    )
+    try {
+      const rows = await listRoadmapVersions(organizationId, roadmapId)
+      const selected = rows.find((item) => item.version_id === versionId)
+      if (!selected)
+        throw new Error(
+          'Submitted version was not found in the refreshed list.',
+        )
+      if (
+        selected.status !== 'in_review' ||
+        selected.revision < submitted.revision
+      )
+        throw new Error(
+          'The refreshed list has not caught up with the submission.',
+        )
+      setVersions(rows)
+      if (selectedIdRef.current === versionId)
+        setDraft(editable(selected.phases))
+    } catch {
+      setRecovery({ kind: 'mutation', latest: null })
+      setError(
+        'Submission succeeded, but the latest version list could not be loaded. Refresh version information to confirm its current state.',
+      )
     }
   }
   async function archive() {
+    const revision = requireRevision(active)
+    if (revision === null || recovery) return
+    if (
+      versions.filter((item) => item.status === 'published').length === 1 &&
+      !window.confirm(
+        'This is the only published version in the current list. Archive it?',
+      )
+    )
+      return
     setBusy(true)
     setError('')
     try {
-      replaceVersion(
-        await archiveRoadmapVersion(organizationId, roadmapId, activeId),
+      const updated = await archiveRoadmapVersion(
+        organizationId,
+        roadmapId,
+        active.version_id,
+        revision,
       )
+      replaceVersion(updated)
+      await refreshVersions(updated.version_id)
       setMessage(
         'Version archived. Existing cohorts still use this exact version.',
       )
     } catch (cause) {
-      setError(cause.message)
+      if (cause.status === 409) {
+        setRecovery({ kind: 'mutation', latest: null })
+        setError(
+          'This version changed on the server. Refresh it before trying to archive again.',
+        )
+      } else setError(cause.message)
     } finally {
       setBusy(false)
     }
   }
   async function copy() {
+    const revision = requireRevision(active)
+    if (revision === null || recovery) return
     setBusy(true)
     setError('')
     try {
-      const next = await copyRoadmapVersion(organizationId, roadmapId, activeId)
-      setVersions((current) => [...current, next])
-      selectVersion(next)
+      const next = await copyRoadmapVersion(
+        organizationId,
+        roadmapId,
+        active.version_id,
+        revision,
+      )
+      await refreshVersions(next.version_id)
       setMessage(
         `Draft v${next.version_number} created with independent topic IDs.`,
       )
     } catch (cause) {
-      setError(cause.message)
+      if (cause.status === 409) {
+        setRecovery({ kind: 'mutation', latest: null })
+        setError(
+          'The source version changed on the server. Refresh it before trying to copy again.',
+        )
+      } else setError(cause.message)
     } finally {
       setBusy(false)
     }
@@ -199,11 +427,14 @@ export default function RoadmapVersionsPage() {
 
   return (
     <>
-      <PageHeading
-        eyebrow="Coordinator / Roadmaps / Versions"
-        title={active?.name || 'Roadmap versions'}
-        description="Edit drafts, review their complete structure, and publish a fixed version for cohort assignment."
-      />
+      <div className="roadmap-page-header">
+        <ForestLandscapeArtwork />
+        <PageHeading
+          eyebrow="Coordinator / Roadmaps / Versions"
+          title={active?.name || 'Roadmap versions'}
+          description="Create and manage roadmap drafts, submit them for review, and track publication status."
+        />
+      </div>
       <div className="roadmap-backlinks">
         <Link className="workspace-text-link" to="/app/coordinator/roadmaps">
           ← All roadmaps
@@ -223,11 +454,119 @@ export default function RoadmapVersionsPage() {
           {error}
         </p>
       )}
+      {recovery && (
+        <section className="workspace-card" aria-label="Version recovery">
+          <h2>
+            {recovery.kind === 'save'
+              ? 'Roadmap changed'
+              : 'Refresh version information'}
+          </h2>
+          <p>
+            {dirty
+              ? 'Your unsaved edits remain in the editor.'
+              : 'Reload the current version before trying the action again.'}
+          </p>
+          <button
+            type="button"
+            className="workspace-button workspace-button-outline"
+            disabled={busy}
+            onClick={reviewLatest}
+          >
+            Review latest version
+          </button>
+          {recovery.latest && dirty && (
+            <>
+              <div
+                className="roadmap-readonly"
+                aria-label="Latest server version"
+              >
+                <h3>Latest server version</h3>
+                {recovery.latest.phases.map((phase, index) => (
+                  <section key={phase.id || index}>
+                    <h4>{phase.title}</h4>
+                    {phase.weeks.map((week, weekIndex) => (
+                      <div key={week.id || weekIndex}>
+                        <strong>{week.title}</strong>
+                        <ul>
+                          {week.topics.map((topic, topicIndex) => (
+                            <li key={topic.id || topicIndex}>{topic.title}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </section>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="workspace-button"
+                onClick={keepEditsOnLatest}
+              >
+                Keep editing with latest revision
+              </button>
+              <button
+                type="button"
+                className="workspace-button workspace-button-outline"
+                onClick={() => replaceVersion(recovery.latest)}
+              >
+                Use latest version and discard my edits
+              </button>
+            </>
+          )}
+        </section>
+      )}
       {message && (
         <p className="form-message" role="status">
           {message}
         </p>
       )}
+      <dialog
+        ref={dialogRef}
+        className="roadmap-submit-dialog"
+        aria-labelledby="roadmap-submit-title"
+        aria-describedby="roadmap-submit-description"
+        onCancel={(event) => {
+          if (busy) event.preventDefault()
+          else setConfirmation(null)
+        }}
+      >
+        <div className="roadmap-submit-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m3 11 17-8-6 18-3-8-8-2Z" />
+            <path d="m11 13 9-10" />
+          </svg>
+        </div>
+        <h2 id="roadmap-submit-title">Submit roadmap for review?</h2>
+        <p id="roadmap-submit-description">
+          This version will become read-only until an Owner or Admin approves or
+          rejects it.
+        </p>
+        <div className="roadmap-submit-dialog-actions">
+          <button
+            type="button"
+            className="workspace-button workspace-button-outline"
+            disabled={busy}
+            onClick={() => setConfirmation(null)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="workspace-button"
+            disabled={busy}
+            onClick={submit}
+          >
+            {busy ? 'Submitting…' : 'Submit for Review'}
+          </button>
+        </div>
+      </dialog>
       {!!versions.length && (
         <div className="roadmap-version-layout">
           <aside
@@ -239,6 +578,7 @@ export default function RoadmapVersionsPage() {
               Version
               <select
                 value={activeId}
+                disabled={busy}
                 onChange={(e) =>
                   selectVersion(
                     versions.find((v) => v.version_id === e.target.value),
@@ -257,11 +597,14 @@ export default function RoadmapVersionsPage() {
                 type="button"
                 key={version.version_id}
                 className={`roadmap-version-choice ${version.version_id === activeId ? 'is-active' : ''}`}
+                aria-pressed={version.version_id === activeId}
+                disabled={busy}
                 onClick={() => selectVersion(version)}
               >
                 <strong>Version {version.version_number}</strong>
-                <span>
-                  {version.status} · {version.topics.length} topics
+                <span className="roadmap-version-choice-meta">
+                  <RoadmapStatusBadge status={version.status} />
+                  <span>{version.topics.length} topics</span>
                 </span>
               </button>
             ))}
@@ -271,8 +614,9 @@ export default function RoadmapVersionsPage() {
               <div className="roadmap-editor-heading">
                 <div>
                   <p className="workspace-card-label">
-                    Version {active.version_number} · {active.status}
+                    Version {active.version_number}
                   </p>
+                  <RoadmapStatusBadge status={active.status} />
                   <h2>{active.name}</h2>
                   <p>{active.description || 'No description.'}</p>
                 </div>
@@ -575,7 +919,9 @@ export default function RoadmapVersionsPage() {
                     <button
                       type="button"
                       className="workspace-button"
-                      disabled={busy || !dirty || problems.length > 0}
+                      disabled={
+                        busy || !!recovery || !dirty || problems.length > 0
+                      }
                       onClick={save}
                     >
                       Save draft
@@ -583,19 +929,21 @@ export default function RoadmapVersionsPage() {
                     <button
                       type="button"
                       className="workspace-button workspace-button-outline"
-                      disabled={busy || dirty || problems.length > 0}
+                      disabled={
+                        busy || !!recovery || dirty || problems.length > 0
+                      }
                       onClick={() => setReviewing(true)}
                     >
-                      Review for publication
+                      Review draft
                     </button>
                   </div>
                   {reviewing && (
                     <div
                       className="roadmap-review"
                       role="region"
-                      aria-label="Publication review"
+                      aria-label="Draft review"
                     >
-                      <h3>Publication review</h3>
+                      <h3>Draft review</h3>
                       {!!sourcePlan?.warnings?.length && (
                         <aside
                           className="source-warning"
@@ -605,7 +953,7 @@ export default function RoadmapVersionsPage() {
                           <p>
                             These extraction notes were checked during import.
                             Compare the saved draft with the original before
-                            publishing.
+                            submitting it for review.
                           </p>
                           <ul>
                             {sourcePlan.warnings.map((warning) => (
@@ -650,23 +998,41 @@ export default function RoadmapVersionsPage() {
                         weeks · {topicCount(draft)} topics.
                       </p>
                       <p>
-                        Publishing freezes this version. Later changes require a
-                        new draft; existing cohorts stay on their assigned
-                        version.
+                        Submitting makes this version read-only until an Owner
+                        or Admin approves or rejects it.
                       </p>
-                      <button
-                        type="button"
-                        className="workspace-button"
-                        disabled={busy}
-                        onClick={publish}
-                      >
-                        Publish version {active.version_number}
-                      </button>
                     </div>
+                  )}
+                  {canSubmit && (
+                    <button
+                      ref={submitTriggerRef}
+                      type="button"
+                      className="workspace-button roadmap-submit-trigger"
+                      disabled={
+                        busy || !!recovery || dirty || problems.length > 0
+                      }
+                      onClick={openSubmission}
+                    >
+                      Submit for Review
+                    </button>
+                  )}
+                  {canSubmit && dirty && (
+                    <p role="status">
+                      Save your changes first before submitting for review.
+                    </p>
                   )}
                 </>
               ) : (
                 <>
+                  {active.status === 'in_review' && (
+                    <aside className="roadmap-in-review-notice">
+                      <strong>This version is under review.</strong>
+                      <p>
+                        Its content is read-only until an Owner or Admin
+                        approves or rejects the submission.
+                      </p>
+                    </aside>
+                  )}
                   <div className="roadmap-readonly">
                     {active.phases.map((phase) => (
                       <div key={phase.id} className="roadmap-phase">
