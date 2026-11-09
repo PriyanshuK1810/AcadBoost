@@ -19,6 +19,13 @@ The existing PostgreSQL schema was baselined as `0_baseline`. Run `npx prisma mi
 
 Google login requires a real OAuth client ID and secret; phone SMS is captured only by the development provider.
 
+Roadmap publication requires an active Owner/Admin membership in the active
+organization on both the nested and canonical publish routes. The policy is
+checked again inside the publication transaction after acquiring its locks.
+Coordinators retain draft creation, editing, copying, and PDF conversion access.
+This is the interim AC01 authorization fix, not complete FR-10/T04 compliance:
+submission, `in_review`, approval/rejection, and reviewer metadata remain pending.
+
 Apply additive migrations on new or existing databases with `npx prisma migrate deploy`,
 then run `npm run db:generate`. Phase 18 adds transactional progress history and
 cohort week scheduling without changing published curriculum or existing progress.

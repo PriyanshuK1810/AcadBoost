@@ -29,6 +29,8 @@ function parse(schema, value, location = 'body') {
 const param = (request, name) => parse(uuid, request.params[name], 'path');
 const staff = (prisma, user, organizationId) =>
   requireOrganizationRole(prisma, user, organizationId, LEARNING_RESOURCE_ROLES);
+const publisher = (prisma, user, organizationId) =>
+  requireOrganizationRole(prisma, user, organizationId, ['owner', 'admin']);
 
 async function scope(prisma, organizationId, roadmapId, versionId) {
   const roadmap = await prisma.roadmap.findUnique({ where: { id: roadmapId } });
@@ -232,11 +234,11 @@ export function registerRoadmapRoutes(app, { prisma, requireUser }) {
     const organizationId = param(request, 'organizationId');
     const roadmapId = param(request, 'roadmapId');
     const versionId = param(request, 'versionId');
-    await staff(prisma, request.user, organizationId);
+    await publisher(prisma, request.user, organizationId);
     const result = await prisma.$transaction(async (tx) => {
       await lockOrganization(tx, organizationId);
       await lockVersion(tx, versionId);
-      await staff(tx, request.user, organizationId);
+      await publisher(tx, request.user, organizationId);
       const { roadmap, version } = await scope(tx, organizationId, roadmapId, versionId);
       if (version.status !== 'draft') throw conflict('Only draft versions can be published');
       if (!complete(await hierarchy(tx, versionId))) {
