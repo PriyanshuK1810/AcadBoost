@@ -11,10 +11,11 @@ import { loadSettings } from '../src/core/config.js';
 const settings = loadSettings();
 const suffix = randomBytes(6).toString('hex');
 const database = `outpost_t04c_${suffix}`, bucket = `outpost-t04c-${suffix}`;
-const evidenceDir = resolve('../docs/verification/t04c');
+const evidenceDir = resolve(process.env.T04C_OUTPUT_DIR || '../docs/verification/t04c');
 await fs.mkdir(evidenceDir, { recursive: true });
 const url = new URL(settings.databaseUrl); url.pathname = `/${database}`;
-const env = { ...process.env, OUTPOST_DATABASE_URL: url.href, T04C_DATABASE_URL: url.href,
+const env = { ...process.env, OUTPOST_DATABASE_URL: url.href, T04C_DATABASE_URL: url.href, T04D_DATABASE_URL: url.href,
+  T04D_EVIDENCE_DIR: evidenceDir,
   T04C_EVIDENCE_PATH: resolve(evidenceDir, 'database-evidence.json'),
   OUTPOST_OBJECT_BUCKET: bucket, OUTPOST_ENV: 'test', CHECKPOINT_DISABLE: '1', PRISMA_HIDE_UPDATE_MESSAGE: 'true' };
 const results = [];
@@ -57,6 +58,7 @@ try {
     await run('backend-full', ['node_modules/vitest/vitest.mjs', 'run', '--maxWorkers=1', '--exclude', 'tests/db/roadmap-review.test.js', '--reporter=default', '--reporter=json', `--outputFile.json=${resolve(evidenceDir, 'backend-full.json')}`]);
     await run('frontend-tests', ['node_modules/vitest/vitest.mjs', 'run', '--maxWorkers=1', '--reporter=default', '--reporter=json', `--outputFile.json=${resolve(evidenceDir, 'frontend-tests.json')}`], resolve('../frontend'));
     await run('frontend-lint', ['node_modules/eslint/bin/eslint.js', '.'], resolve('../frontend'));
+    await run('frontend-build', ['node_modules/vite/bin/vite.js', 'build'], resolve('../frontend'));
   }
 } finally {
   // Cleanup touches only the exact database/bucket created by this invocation.

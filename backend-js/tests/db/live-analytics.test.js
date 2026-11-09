@@ -1,3 +1,4 @@
+import { publishRoadmap, archiveRoadmap } from '../helpers/roadmapWorkflow.js';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
@@ -24,7 +25,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       const as = (user) => ({ 'X-Actor': user.id });
       const roadmap = await request(app).post('/api/v1/organizations/' + org.id + '/roadmaps').set(as(owner)).send({ name: 'Pinned plan', topics: [{title:'One'}, {title:'Two'}] });
       const versionPath = '/api/v1/organizations/' + org.id + '/roadmaps/' + roadmap.body.id + '/versions';
-      expect((await request(app).post(versionPath + '/' + roadmap.body.version_id + '/publish').set(as(owner))).status).toBe(200);
+      expect((await publishRoadmap(app, roadmap.body.version_id, as(owner))).status).toBe(200);
       const cohort = await request(app).post('/api/v1/organizations/' + org.id + '/cohorts').set(as(owner)).send({name:'Lab cohort', roadmap_version_id:roadmap.body.version_id});
       for(const user of [first, zero]) expect((await request(app).post('/api/v1/cohorts/join').set(as(user)).send({invite_code:cohort.body.invite_code})).status).toBe(200);
       await prisma.organizationMembership.create({data:{organizationId:org.id,userId:suspended.id,role:'student'}});
@@ -39,9 +40,9 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       expect(result.body.topics[0]).toMatchObject({completed:1,total:2,percent:50});
       expect((await request(app).get(path).set(as(first))).status).toBe(403);
       expect((await request(app).get(path).set(as(stranger))).status).toBe(403);
-      const newer = await request(app).post(versionPath).set(as(owner)).send({source_version_id:roadmap.body.version_id});
-      await request(app).post(versionPath + '/' + newer.body.version_id + '/publish').set(as(owner));
-      await request(app).post(versionPath + '/' + roadmap.body.version_id + '/archive').set(as(owner));
+      const newer = await request(app).post(versionPath).set(as(owner)).send({source_version_id:roadmap.body.version_id, revision:(await prisma.roadmapVersion.findUnique({where:{id:roadmap.body.version_id}})).revision});
+      await publishRoadmap(app, newer.body.version_id, as(owner));
+      await archiveRoadmap(app, roadmap.body.version_id, as(owner));
       result = await request(app).get(path).set(as(owner)); expect(result.body.roadmap_version_number).toBe(1);
       await prisma.organizationMembership.updateMany({where:{organizationId:org.id,role:'student'},data:{status:'inactive'}});
       result = await request(app).get(path).set(as(owner)); expect(result.body).toMatchObject({students:[],average_percent:0,metrics:{eligible_students:0,possible_topic_assignments:0}});

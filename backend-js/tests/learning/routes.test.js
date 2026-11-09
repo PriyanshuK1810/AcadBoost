@@ -1,3 +1,4 @@
+import { publishRoadmap } from '../helpers/roadmapWorkflow.js';
 import express from 'express';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
@@ -57,7 +58,7 @@ function workflowFixture({ redisClient } = {}) {
   let sequence = 1;
   const makeId = () => '00000000-0000-4000-8000-' + String(sequence++).padStart(12, '0');
   const tables = Object.fromEntries(
-    ['organization', 'organizationMembership', 'organizationInvitation', 'roadmap', 'roadmapVersion', 'phase', 'week', 'topic', 'cohort', 'cohortEnrollment', 'topicProgress', 'activityEvent', 'user']
+    ['organization', 'organizationMembership', 'organizationInvitation', 'roadmap', 'roadmapVersion', 'phase', 'week', 'topic', 'cohort', 'cohortEnrollment', 'topicProgress', 'activityEvent', 'user', 'roadmapReviewAttempt', 'auditEvent']
       .map((name) => [name, []]),
   );
   tables.user.push(
@@ -72,7 +73,8 @@ function workflowFixture({ redisClient } = {}) {
   });
   const model = (name) => ({
     create: async ({ data }) => {
-      const row = { id: makeId(), createdAt: new Date('2026-09-25T00:00:00Z'), status: 'active', ...data };
+      const row = { id: makeId(), createdAt: new Date('2026-09-25T00:00:00Z'), status: 'active', revision: 1,
+        ...(name === 'roadmapReviewAttempt' ? { decision: 'pending', submittedAt: new Date(), reviewedAt: null, rejectionReason: null } : {}), ...data };
       tables[name].push(row);
       return row;
     },
@@ -89,6 +91,7 @@ function workflowFixture({ redisClient } = {}) {
     update: async ({ where, data }) => {
       const row = tables[name].find((entry) => matches(entry, where));
       if (!row) throw new Error('Missing row');
+      if (name === 'roadmapVersion' && data.status && data.status !== row.status) row.revision++;
       Object.assign(row, data);
       return row;
     },
@@ -112,6 +115,19 @@ function workflowFixture({ redisClient } = {}) {
   const prisma = Object.fromEntries(Object.keys(tables).map((name) => [name, model(name)]));
   prisma.$transaction = async (fn) => fn(prisma);
   prisma.$queryRaw = async () => [{ id: 'locked' }];
+  // Unit-only adapter for the real workflow SQL; security/integrity use PostgreSQL tests.
+  prisma.$executeRaw = async (strings, ...values) => {
+    const sql = strings.join('?');
+    if (sql.includes('UPDATE roadmap_review_attempts')) {
+      const [decision, reviewedBy, rejectionReason, id] = values;
+      Object.assign(tables.roadmapReviewAttempt.find(row => row.id === id), { decision, reviewedBy, rejectionReason, reviewedAt: new Date() });
+    } else if (sql.includes('UPDATE roadmap_versions')) {
+      const [attemptId, id] = values;
+      const row = tables.roadmapVersion.find(row => row.id === id);
+      row.status = 'published'; row.revision++; row.publishedAt = tables.roadmapReviewAttempt.find(row => row.id === attemptId).reviewedAt;
+    }
+    return 1;
+  };
   const rateCounts = new Map();
   const limiter = redisClient ?? {
     async eval(_script, { keys }) {
@@ -151,7 +167,7 @@ describe('live learning workflow', () => {
     expect(roadmap.body.status).toBe('draft');
     expect(roadmap.body.topics.map((topic) => topic.week)).toEqual([1, 2]);
     expect((await request(app).get('/api/v1/organizations/' + org.body.id + '/roadmaps').set(coordinator)).body).toHaveLength(1);
-    expect((await request(app).post(`/api/v1/organizations/${org.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(coordinator)).status).toBe(200);
+    expect((await publishRoadmap(app, roadmap.body.version_id, coordinator)).status).toBe(200);
     const cohort = await request(app)
       .post('/api/v1/organizations/' + org.body.id + '/cohorts')
       .set(coordinator)
@@ -193,7 +209,7 @@ describe('live learning workflow', () => {
     const organization = await request(app).post('/api/v1/organizations').set(owner).send({ name: 'Campus' });
     const roadmap = await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps`).set(owner)
       .send({ name: 'Plan', topics: [{ title: 'Topic' }] });
-    await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(owner);
+    await publishRoadmap(app, roadmap.body.version_id, owner);
     const cohort = await request(app).post(`/api/v1/organizations/${organization.body.id}/cohorts`).set(owner)
       .send({ name: 'Cohort', roadmap_version_id: roadmap.body.version_id });
     await request(app).post('/api/v1/cohorts/join').set(learner).send({ invite_code: cohort.body.invite_code });
@@ -215,7 +231,7 @@ describe('live learning workflow', () => {
     const organization = await request(app).post('/api/v1/organizations').set(owner).send({ name: 'Campus' });
     const roadmap = await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps`).set(owner)
       .send({ name: 'Plan', topics: [{ title: 'Topic' }] });
-    await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(owner);
+    await publishRoadmap(app, roadmap.body.version_id, owner);
     const cohort = await request(app).post(`/api/v1/organizations/${organization.body.id}/cohorts`).set(owner)
       .send({ name: 'Cohort', roadmap_version_id: roadmap.body.version_id });
     tables.cohort[0].inviteCodeExpiresAt = new Date(Date.now() - 1);
@@ -287,7 +303,7 @@ describe('live learning workflow', () => {
     const organization = await request(app).post('/api/v1/organizations').set(owner).send({ name: 'Campus' });
     const roadmap = await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps`).set(owner)
       .send({ name: 'Plan', topics: [{ title: 'Topic' }] });
-    await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(owner);
+    await publishRoadmap(app, roadmap.body.version_id, owner);
     const cohort = await request(app).post(`/api/v1/organizations/${organization.body.id}/cohorts`).set(owner)
       .send({ name: 'Cohort', roadmap_version_id: roadmap.body.version_id });
     const code = cohort.body.invite_code;
@@ -317,7 +333,7 @@ describe('live learning workflow', () => {
     const otherOrganization = await request(app).post('/api/v1/organizations').set(other).send({ name: 'Other Campus' });
     const roadmap = await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps`).set(owner)
       .send({ name: 'Plan', topics: [{ title: 'Topic' }] });
-    await request(app).post(`/api/v1/organizations/${organization.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(owner);
+    await publishRoadmap(app, roadmap.body.version_id, owner);
     const cohort = await request(app).post(`/api/v1/organizations/${organization.body.id}/cohorts`).set(owner)
       .send({ name: 'Cohort', roadmap_version_id: roadmap.body.version_id });
     expect((await request(app).post(`/api/v1/cohorts/${cohort.body.id}/join-code/rotate`).set(other)).status).toBe(403);
@@ -462,7 +478,7 @@ describe('FastAPI rounding compatibility', () => {
       .post('/api/v1/organizations/' + org.body.id + '/roadmaps')
       .set(coordinator)
       .send({ name: 'Eight topics', topics: Array.from({ length: 8 }, (_, index) => ({ title: 'Topic ' + index })) });
-    await request(app).post(`/api/v1/organizations/${org.body.id}/roadmaps/${roadmap.body.id}/versions/${roadmap.body.version_id}/publish`).set(coordinator);
+    await publishRoadmap(app, roadmap.body.version_id, coordinator);
     const cohort = await request(app)
       .post('/api/v1/organizations/' + org.body.id + '/cohorts')
       .set(coordinator)

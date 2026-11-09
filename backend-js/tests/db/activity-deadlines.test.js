@@ -1,3 +1,4 @@
+import { publishRoadmap, archiveRoadmap } from '../helpers/roadmapWorkflow.js';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
@@ -18,7 +19,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       const app=express();app.use(express.json());registerLearningRoutes(app,{prisma,settings:{},redisClient:{eval:async()=>1},requireUser:(req,res,next)=>{req.user=actors.get(req.get('X-Actor'));next();}});app.use(errorHandler);
       const as=(user)=>({'X-Actor':user.id});
       const roadmap=await request(app).post('/api/v1/organizations/'+org.id+'/roadmaps').set(as(owner)).send({name:'Original plan',topics:[{title:'Lab topic'}]});
-      await request(app).post('/api/v1/organizations/'+org.id+'/roadmaps/'+roadmap.body.id+'/versions/'+roadmap.body.version_id+'/publish').set(as(owner));
+      await publishRoadmap(app, roadmap.body.version_id, as(owner));
       const cohort=await request(app).post('/api/v1/organizations/'+org.id+'/cohorts').set(as(owner)).send({name:'Lab group',roadmap_version_id:roadmap.body.version_id});
       await request(app).post('/api/v1/cohorts/join').set(as(student)).send({invite_code:cohort.body.invite_code});
       const learning=await request(app).get('/api/v1/progress/me').set(as(student));const week=learning.body[0].phases[0].weeks[0], topic=week.topics[0];
@@ -28,9 +29,9 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       expect((await request(app).put(schedule).set(as(owner)).send(due)).status).toBe(200);
       expect(await prisma.deadlineChange.count({where:{cohortId:cohort.body.id}})).toBe(1);
       const versionPath='/api/v1/organizations/'+org.id+'/roadmaps/'+roadmap.body.id+'/versions';
-      const newer=await request(app).post(versionPath).set(as(owner)).send({source_version_id:roadmap.body.version_id});
-      await request(app).post(versionPath+'/'+newer.body.version_id+'/publish').set(as(owner));
-      await request(app).post(versionPath+'/'+roadmap.body.version_id+'/archive').set(as(owner));
+      const newer=await request(app).post(versionPath).set(as(owner)).send({source_version_id:roadmap.body.version_id, revision:(await prisma.roadmapVersion.findUnique({where:{id:roadmap.body.version_id}})).revision});
+      await publishRoadmap(app, newer.body.version_id, as(owner));
+      await archiveRoadmap(app, roadmap.body.version_id, as(owner));
       const otherWeek=await prisma.week.findFirst({where:{phase:{roadmapVersionId:newer.body.version_id}}});
       expect((await request(app).put(schedule.replace(week.id,otherWeek.id)).set(as(owner)).send(due)).status).toBe(404);
       await expect(prisma.cohortWeekDeadline.create({data:{cohortId:cohort.body.id,weekId:otherWeek.id,dueAt:new Date(due.due_at),timeZone:due.time_zone,updatedBy:owner.id}})).rejects.toThrow();

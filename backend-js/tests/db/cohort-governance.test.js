@@ -1,3 +1,4 @@
+import { publishRoadmap, archiveRoadmap } from '../helpers/roadmapWorkflow.js';
 import { createHash, randomUUID } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
@@ -56,7 +57,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       });
       expect(roadmap.status).toBe(201);
       const versionPath = `${roadmapPath}/${roadmap.body.id}/versions/${roadmap.body.version_id}`;
-      const draft = await request(app).put(versionPath).set(as(owner)).send({ phases: [
+      const draft = await request(app).put(versionPath).set(as(owner)).send({ revision: roadmap.body.revision, phases: [
         { title: 'Foundations', weeks: [
           { title: 'Reflect', topics: [
             { title: 'Name strengths', description: 'List personal strengths.' },
@@ -73,7 +74,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
         ] },
       ] });
       expect(draft.status).toBe(200);
-      const published = await request(app).post(`${versionPath}/publish`).set(as(owner));
+      const published = await publishRoadmap(app, roadmap.body.version_id, as(owner), `${versionPath}/publish`);
       expect(published.status).toBe(200);
       const cohort = await request(app).post(`/api/v1/organizations/${organization.id}/cohorts`).set(as(owner)).send({
         name: 'Review cohort', roadmap_version_id: roadmap.body.version_id,
@@ -179,8 +180,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       expect((await request(app).get(`/api/v1/organizations/${organization.id}/cohorts`).set(as(owner)))
         .body[0].join_code_status).toBe('expired');
 
-      expect((await request(app).post(`${roadmapPath}/${roadmap.body.id}/versions/${roadmap.body.version_id}/archive`)
-        .set(as(owner))).status).toBe(200);
+      expect((await archiveRoadmap(app, roadmap.body.version_id, as(owner))).status).toBe(200);
       expect((await request(app).get('/api/v1/progress/me').set(as(student))).body[0])
         .toMatchObject({ cohort_id: cohort.body.id, roadmap_version_id: roadmap.body.version_id, roadmap_version_number: 1, completed: 1, total: 4 });
       stored = await prisma.cohort.findUnique({ where: { id: cohort.body.id } });

@@ -1,3 +1,4 @@
+import { publishRoadmap, submitRoadmap, archiveRoadmap } from '../helpers/roadmapWorkflow.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import request from 'supertest';
@@ -119,8 +120,7 @@ describe.skipIf(!databaseUrl)('AC01 publication authorization in PostgreSQL', ()
         await withFixture(async (f) => {
           const draft = await f.draft();
           const before = await f.snapshot();
-          const result = await request(f.app).post(publicationPath(entryPoint, draft, f.organization.id))
-            .set(await f.auth(role));
+          const result = await publishRoadmap(f.app, draft.version_id, await f.auth(role), publicationPath(entryPoint, draft, f.organization.id));
           expect(result.status).toBe(200);
           expect(result.body.status).toBe('published');
           const after = await f.snapshot();
@@ -173,6 +173,7 @@ describe.skipIf(!databaseUrl)('AC01 publication authorization in PostgreSQL', ()
       test(`AC01 ${entryPoint} rechecks an Admin ${change} while publication waits for its transaction lock`, async () => {
         await withFixture(async (f) => {
           const draft = await f.draft();
+          const submitted = await submitRoadmap(f.app, draft.version_id, await f.auth('coordinator'));
           const headers = await f.auth('admin');
           const before = await f.snapshot();
           const control = new pg.Client({ connectionString: f.connectionString });
@@ -183,7 +184,7 @@ describe.skipIf(!databaseUrl)('AC01 publication authorization in PostgreSQL', ()
             await control.query('BEGIN');
             await control.query('SELECT id FROM organizations WHERE id = $1::uuid FOR UPDATE', [f.organization.id]);
             pending = request(f.app).post(publicationPath(entryPoint, draft, f.organization.id))
-              .set(headers).then(result => result);
+              .set(headers).send({ revision: submitted.revision, submission_id: submitted.pending_submission.id }).then(result => result);
             // Observe the real transaction blocked after its initial policy check;
             // no mocked permission result or arbitrary sleep selects the race.
             let waiting = false;
@@ -222,29 +223,28 @@ describe.skipIf(!databaseUrl)('AC01 publication authorization in PostgreSQL', ()
       await withFixture(async (f) => {
         const draft = await f.draft();
         const versionPath = `/api/v1/organizations/${f.organization.id}/roadmaps/${draft.id}/versions/${draft.version_id}`;
-        const edited = await request(f.app).put(versionPath).set(await f.auth('coordinator')).send({
+        const edited = await request(f.app).put(versionPath).set(await f.auth('coordinator')).send({ revision: draft.revision,
           phases: [{ title: 'Coordinator phase', weeks: [{ title: 'Coordinator week', topics: [
             { title: 'Coordinator-edited topic', description: 'Draft editing remains allowed.' },
           ] }] }],
         });
         expect(edited.status).toBe(200);
         await f.expectDenied(publicationPath(entryPoint, draft, f.organization.id), 'coordinator');
-        expect((await request(f.app).post(publicationPath(entryPoint, draft, f.organization.id))
-          .set(await f.auth('owner'))).status).toBe(200);
+        const published = await publishRoadmap(f.app, draft.version_id, await f.auth('owner'), publicationPath(entryPoint, draft, f.organization.id));
+        expect(published.status).toBe(200);
         const cohort = await request(f.app).post(`/api/v1/organizations/${f.organization.id}/cohorts`)
           .set(await f.auth('owner')).send({ name: 'Pinned cohort', roadmap_version_id: draft.version_id });
         expect(cohort.status).toBe(201);
         const copy = await request(f.app).post(`/api/v1/roadmaps/${draft.id}/versions`)
-          .set(await f.auth('coordinator')).send({ source_version_id: draft.version_id });
+          .set(await f.auth('coordinator')).send({ source_version_id: draft.version_id, revision: published.body.revision });
         expect(copy.status).toBe(201);
         expect(copy.body.status).toBe('draft');
         expect(copy.body.topics[0].id).not.toBe(edited.body.topics[0].id);
         expect((await request(f.app).patch(`/api/v1/roadmap-versions/${copy.body.version_id}`)
-          .set(await f.auth('coordinator')).send({ phases: [] })).status).toBe(200);
+          .set(await f.auth('coordinator')).send({ revision: copy.body.revision, phases: [] })).status).toBe(200);
         expect((await request(f.app).put(versionPath).set(await f.auth('coordinator'))
-          .send({ phases: [] })).status).toBe(409);
-        expect((await request(f.app).post(`/api/v1/roadmap-versions/${draft.version_id}/archive`)
-          .set(await f.auth('owner'))).status).toBe(200);
+          .send({ revision: published.body.revision, phases: [] })).status).toBe(409);
+        expect((await archiveRoadmap(f.app, draft.version_id, await f.auth('coordinator'))).status).toBe(200);
         await expect(f.prisma.topic.update({ where: { id: edited.body.topics[0].id }, data: {
           title: 'Forbidden archived edit',
         } })).rejects.toThrow();
@@ -278,10 +278,16 @@ describe.skipIf(!databaseUrl)('AC01 publication authorization in PostgreSQL', ()
         await f.expectDenied(publicationPath(entryPoint, draft, f.organization.id), 'coordinator');
         expect((await request(f.app).post(convertPath).set(await f.auth('coordinator'))
           .send({ revision: plan.revision })).body).toMatchObject(converted.body);
+        const submitted = await submitRoadmap(f.app, draft.version_id, await f.auth('coordinator'));
+        expect((await request(f.app).post(convertPath).set(await f.auth('coordinator')).send({revision:plan.revision})).body).toMatchObject(converted.body);
         const published = await request(f.app).post(publicationPath(entryPoint, draft, f.organization.id))
-          .set(await f.auth(entryPoint === 'nested' ? 'owner' : 'admin'));
+          .set(await f.auth(entryPoint === 'nested' ? 'owner' : 'admin'))
+          .send({revision:submitted.revision,submission_id:submitted.pending_submission.id});
         expect(published.status).toBe(200);
         expect(published.body.topics.map(topic => topic.title)).toEqual(['Imported topic']);
+        const beforeRepeat=await f.snapshot();
+        expect((await request(f.app).post(convertPath).set(await f.auth('coordinator')).send({revision:plan.revision})).body).toMatchObject(converted.body);
+        expect(await f.snapshot()).toEqual(beforeRepeat);
         expect((await f.prisma.activityPlan.findUnique({ where: { id: plan.id } })).versionId)
           .toBe(draft.version_id);
       });

@@ -1,3 +1,5 @@
+import { publishRoadmap } from '../helpers/roadmapWorkflow.js';
+import { registerRoadmapRoutes } from '../../src/modules/learning/roadmapRoutes.js';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
@@ -48,9 +50,11 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       const topic = await prisma.topic.create({ data: {
         weekId: week.id, title: `${name} topic`, description: '', orderIndex: 1,
       } });
-      const published = await prisma.roadmapVersion.update({
-        where: { id: version.id }, data: { status: 'published', publishedAt: new Date() },
-      });
+      const fixtureApp = express(); fixtureApp.use(express.json());
+      registerRoadmapRoutes(fixtureApp, { prisma, requireUser: (req, _res, next) => { req.user={id:actor.id,account_type:actor.accountType}; next(); } });
+      fixtureApp.use(errorHandler);
+      await publishRoadmap(fixtureApp, version.id);
+      const published = await prisma.roadmapVersion.findUnique({where:{id:version.id}});
       return { roadmap, version: published, topic };
     };
     const createCohort = async (organization, actor, version, name) => prisma.cohort.create({ data: {
@@ -73,7 +77,9 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       const versionA = await createPublishedRoadmap(orgA, ownerA, 'Plan A');
       const versionB = await createPublishedRoadmap(orgB, ownerB, 'Plan B');
       const cohortA = await createCohort(orgA, ownerA, versionA.version, 'Cohort A');
-      const corruptCohort = await createCohort(orgA, ownerA, versionB.version, 'Mismatched cohort');
+      // The strict database now prevents corrupt tenant pins instead of allowing a fixture to fabricate one.
+      await expect(createCohort(orgA, ownerA, versionB.version, 'Mismatched cohort')).rejects.toThrow();
+      const corruptCohort = { id: randomUUID() };
       await prisma.organizationMembership.createMany({ data: [
         { organizationId: orgA.id, userId: admin.id, role: 'admin' },
         { organizationId: orgA.id, userId: coordinator.id, role: 'coordinator' },
@@ -84,7 +90,6 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       ] });
       await prisma.cohortEnrollment.createMany({ data: [
         { cohortId: cohortA.id, userId: student.id },
-        { cohortId: corruptCohort.id, userId: student.id },
         { cohortId: cohortA.id, userId: mismatched.id },
       ] });
 

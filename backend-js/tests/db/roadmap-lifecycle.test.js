@@ -1,3 +1,4 @@
+import { publishRoadmap, submitRoadmap, archiveRoadmap } from '../helpers/roadmapWorkflow.js';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
@@ -63,22 +64,26 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
         name: 'Cohort', roadmap_version_id: created.body.version_id,
       })).status).toBe(404);
       const incomplete = await request(app).patch(`/api/v1/roadmap-versions/${created.body.version_id}`)
-        .send({ phases: [{ title: 'Phase 1', weeks: [] }] });
+        .send({ revision: created.body.revision, phases: [{ title: 'Phase 1', weeks: [] }] });
       expect(incomplete.status).toBe(200);
-      expect((await request(app).post(`${path}/publish`)).status).toBe(422);
+      expect((await request(app).post(`${path}/submit`).send({revision:incomplete.body.revision})).status).toBe(422);
+      expect((await request(app).post(`${path}/publish`).send({revision:incomplete.body.revision,submission_id:randomUUID()})).status).toBe(409);
       await expect(prisma.roadmapVersion.update({
         where: { id: created.body.version_id }, data: { status: 'published', publishedAt: new Date() },
       })).rejects.toThrow();
-      const edited = await request(app).put(path).send({ phases: [{
+      const edited = await request(app).put(path).send({ revision: incomplete.body.revision, phases: [{
         title: 'Preparation', weeks: [{ title: 'Week one', topics: [{ title: 'Build skills', description: 'Practice' }] }],
       }] });
       expect(edited.status).toBe(200);
       expect(edited.body.phases[0].weeks[0].topics[0].title).toBe('Build skills');
+      const submitted = await submitRoadmap(app, created.body.version_id);
+      const decision={revision:submitted.revision,submission_id:submitted.pending_submission.id};
       const publish = await Promise.all([
-        request(app).post(`${path}/publish`), request(app).post(`${path}/publish`),
+        request(app).post(`${path}/publish`).send(decision), request(app).post(`${path}/publish`).send(decision),
       ]);
+      const published=publish.find(result=>result.status===200);
       expect(publish.map((result) => result.status).sort()).toEqual([200, 409]);
-      expect((await request(app).put(path).send({ phases: [] })).status).toBe(409);
+      expect((await request(app).put(path).send({ revision: published.body.revision, phases: [] })).status).toBe(409);
       await expect(prisma.topic.update({
         where: { id: edited.body.topics[0].id }, data: { title: 'Tampered' },
       })).rejects.toThrow();
@@ -93,20 +98,20 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
       expect((await request(app).put(`/api/v1/progress/topics/${edited.body.topics[0].id}`)
         .set('X-Actor', 'student').send({ completed: true })).status).toBe(204);
       const copy = await request(app).post(`${base}/${created.body.id}/versions`).send({
-        source_version_id: created.body.version_id,
+        source_version_id: created.body.version_id, revision: published.body.revision,
       });
       expect(copy.status).toBe(201);
       expect(copy.body.version_number).toBe(2);
       expect(copy.body.status).toBe('draft');
       expect(copy.body.topics[0].id).not.toBe(edited.body.topics[0].id);
       const concurrentCopies = await Promise.all([
-        request(app).post(`${base}/${created.body.id}/versions`).send({ source_version_id: created.body.version_id }),
-        request(app).post(`${base}/${created.body.id}/versions`).send({ source_version_id: created.body.version_id }),
+        request(app).post(`${base}/${created.body.id}/versions`).send({ source_version_id: created.body.version_id, revision: published.body.revision }),
+        request(app).post(`${base}/${created.body.id}/versions`).send({ source_version_id: created.body.version_id, revision: published.body.revision }),
       ]);
       expect(concurrentCopies.map((result) => result.status)).toEqual([201, 201]);
       expect(concurrentCopies.map((result) => result.body.version_number).sort()).toEqual([3, 4]);
       expect((await request(app).post(`${base}/${created.body.id}/versions`).send({
-        source_version_id: copy.body.version_id,
+        source_version_id: copy.body.version_id, revision: copy.body.revision,
       })).status).toBe(409);
       expect((await request(app).post(`/api/v1/organizations/${org.id}/cohorts`).send({
         name: 'Draft cohort', roadmap_version_id: copy.body.version_id,
@@ -121,7 +126,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
         .set('X-Actor', 'other')).status).toBe(404);
       const sibling = await request(app).post(base).send({ name: 'Sibling plan', topics: [{ title: 'Other topic' }] });
       expect((await request(app).get(`${base}/${sibling.body.id}/versions/${created.body.version_id}`)).status).toBe(404);
-      const archived = await request(app).post(`${path}/archive`);
+      const archived = await archiveRoadmap(app, created.body.version_id);
       expect(archived.status).toBe(200);
       expect(archived.body.status).toBe('archived');
       await expect(prisma.topic.delete({ where: { id: edited.body.topics[0].id } })).rejects.toThrow();
@@ -136,7 +141,7 @@ describe.skipIf(!(process.env.OUTPOST_DATABASE_URL || process.env.DATABASE_URL))
         .toBe(created.body.version_id);
       expect((await prisma.roadmapVersion.findUnique({ where: { id: created.body.version_id } })).versionNumber)
         .toBe(1);
-      expect((await request(app).post(`${base}/${created.body.id}/versions/${copy.body.version_id}/publish`)).status).toBe(200);
+      expect((await publishRoadmap(app, copy.body.version_id)).status).toBe(200);
       expect((await request(app).get(`${base}/${created.body.id}/versions`)).body.map((row) => row.status))
         .toEqual(['archived', 'published', 'draft', 'draft']);
     } finally {
