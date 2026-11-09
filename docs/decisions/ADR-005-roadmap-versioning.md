@@ -1,6 +1,7 @@
 # ADR-005: Roadmap versioning and publication
 
 Status: Accepted (formalizes the roadmap-versioning architecture approved in Layers 1–2).
+Supersession: [ADR-009](ADR-009-roadmap-review-approval.md) supersedes this record's three-state/direct-publication lifecycle. The historical text below is retained; new publication requires submission and atomic approval/publication.
 Date: 2026-09-17.
 Scope: Phase 0 curriculum version lifecycle, cohort assignment, and progress-identity invariants only.
 

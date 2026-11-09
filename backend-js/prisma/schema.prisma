@@ -126,6 +126,7 @@ model OrganizationMembership {
 }
 
 model Organization {
+  auditEvents AuditEvent[]
   activityEvents ActivityEvent[]
   activityPlans ActivityPlan[]
   id                       String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -239,6 +240,9 @@ model ReviewTopicProgress {
 }
 
 model RoadmapVersion {
+  revision Int @default(1)
+  revisionTxid BigInt @default(dbgenerated("txid_current()")) @map("revision_txid")
+  reviewAttempts RoadmapReviewAttempt[]
   activityPlan ActivityPlan?
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   roadmapId     String    @db.Uuid @map("roadmap_id")
@@ -322,6 +326,9 @@ model Topic {
 
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model User {
+  submittedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapSubmitter")
+  decidedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapReviewer")
+  auditEvents AuditEvent[]
   activityEvents ActivityEvent[]
   uploadedActivityPlans ActivityPlan[]
   deadlinesUpdated CohortWeekDeadline[]
@@ -472,4 +479,40 @@ enum UserStatus {
   active
   suspended
   deleted
+}
+model RoadmapReviewAttempt {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  versionId String @db.Uuid @map("version_id")
+  submittedRevision Int @map("submitted_revision")
+  submittedBy String @db.Uuid @map("submitted_by")
+  submittedAt DateTime @default(now()) @db.Timestamptz(6) @map("submitted_at")
+  decision String @default("pending") @db.VarChar(16)
+  reviewedBy String? @db.Uuid @map("reviewed_by")
+  reviewedAt DateTime? @db.Timestamptz(6) @map("reviewed_at")
+  rejectionReason String? @db.VarChar(2000) @map("rejection_reason")
+  version RoadmapVersion @relation(fields: [versionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submitter User @relation("RoadmapSubmitter", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewer User? @relation("RoadmapReviewer", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  @@unique([versionId, submittedRevision], map: "uq_review_submission")
+  @@index([submittedBy], map: "ix_review_submitter")
+  @@index([reviewedBy], map: "ix_review_reviewer")
+  @@map("roadmap_review_attempts")
+}
+
+model AuditEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @db.Uuid @map("organization_id")
+  actorId String @db.Uuid @map("actor_id")
+  action String @db.VarChar(100)
+  entityType String @db.VarChar(64) @map("entity_type")
+  entityId String @db.Uuid @map("entity_id")
+  createdAt DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+  requestId String? @db.VarChar(128) @map("request_id")
+  metadata Json @default("{}")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  @@index([organizationId, createdAt, id], map: "ix_audit_org_time")
+  @@index([actorId, createdAt], map: "ix_audit_actor_time")
+  @@index([entityType, entityId, createdAt], map: "ix_audit_entity")
+  @@map("audit_events")
 }
