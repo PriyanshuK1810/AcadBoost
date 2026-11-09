@@ -1,5 +1,3 @@
-// Introspected from Alembic revision 20260925_0015.
-// prisma-client-js is used because this application runs plain JavaScript.
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,7 +11,6 @@ model AlembicVersion {
   @@map("alembic_version")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model AuthSession {
   id                     String            @id(map: "pk_auth_sessions") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId                String            @db.Uuid @map("user_id")
@@ -79,7 +76,6 @@ model Cohort {
   @@map("cohorts")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model EmailVerificationToken {
   id          String    @id(map: "pk_email_verification_tokens") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId     String    @db.Uuid @map("user_id")
@@ -164,7 +160,6 @@ model OrganizationInvitation {
   @@map("organization_invitations")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model OtpChallenge {
   id                  String      @id(map: "pk_otp_challenges") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   phoneE164          String      @db.VarChar(32) @map("phone_e164")
@@ -190,7 +185,6 @@ model PasswordCredential {
   @@map("password_credentials")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model PasswordResetToken {
   id          String    @id(map: "pk_password_reset_tokens") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId     String    @db.Uuid @map("user_id")
@@ -324,7 +318,6 @@ model Topic {
   @@map("topics")
 }
 
-/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model User {
   submittedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapSubmitter")
   decidedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapReviewer")
@@ -480,6 +473,7 @@ enum UserStatus {
   suspended
   deleted
 }
+
 model RoadmapReviewAttempt {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   versionId String @db.Uuid @map("version_id")
