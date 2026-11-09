@@ -16,12 +16,17 @@ export const notReady = (message) => new AppError(503, 'not_ready', message);
 
 export function errorHandler(error, request, response, _next) {
   const expected = error instanceof AppError;
-  if (!expected) console.error('request.failed', { requestId: request.requestId, error });
+  const status = expected ? error.status : 500;
+  const code = expected ? error.code : 'internal_error';
+  if (!expected || code === 'invalid_json') {
+    // Parser and application errors can carry credentials in messages or properties.
+    console.error('request.failed', { requestId: request.requestId, method: request.method, status, code });
+  }
   const payload = {
-    code: expected ? error.code : 'internal_error',
+    code,
     message: expected ? error.message : 'Internal server error',
     request_id: request.requestId,
   };
   if (expected && error.details) payload.details = error.details;
-  response.status(expected ? error.status : 500).json({ error: payload });
+  response.status(status).json({ error: payload });
 }

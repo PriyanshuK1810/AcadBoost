@@ -30,7 +30,7 @@ export function createApp({ prisma, settings = {}, emailProvider, redisClient, s
         logger: 'outpost.request',
         message: 'request.completed',
         method: request.method,
-        path: request.path,
+        path: request.route?.path,
         request_id: request.requestId,
         status_code: response.statusCode,
         duration_ms: Math.round((performance.now() - started) * 1000) / 1000,
@@ -46,9 +46,13 @@ export function createApp({ prisma, settings = {}, emailProvider, redisClient, s
     const review = request.method === 'PATCH' &&
       /^\/api\/v1\/organizations\/[0-9a-f-]+\/activity-plans\/[0-9a-f-]+\/?$/i.test(request.path);
     (review ? reviewJson : normalJson)(request, response, (error) => {
-      next(error?.type === 'entity.too.large'
-        ? new AppError(413, 'request_too_large', 'The request exceeds the allowed size.')
-        : error);
+      if (error?.type === 'entity.too.large') {
+        return next(new AppError(413, 'request_too_large', 'The request exceeds the allowed size.'));
+      }
+      if (error?.type === 'entity.parse.failed' && error.status === 400) {
+        return next(new AppError(400, 'invalid_json', 'Malformed JSON request body.'));
+      }
+      next(error);
     });
   });
   app.use(cookieParser());

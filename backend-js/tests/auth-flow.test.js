@@ -83,6 +83,16 @@ describe('password registration to authenticated dashboard', () => {
     expect(me.status).toBe(200);
     expect(me.body.id).toBe(created.body.id);
     expect(db.events[0].eventType).toBe('authentication.succeeded');
+
+    const denied = await request(app).post('/api/v1/auth/password/login').send({
+      identifier: registration.email, password: 'incorrect-synthetic-password',
+    });
+    expect(denied.status).toBe(401);
+    expect(denied.body.error).toEqual({
+      code: 'unauthorized', message: 'Invalid credentials', request_id: denied.headers['x-request-id'],
+    });
+    expect(denied.headers['set-cookie']).toBeUndefined();
+    expect(db.sessions.size).toBe(1);
   }, 20000);
 
   it('rejects a token for a session that has been revoked', async () => {
