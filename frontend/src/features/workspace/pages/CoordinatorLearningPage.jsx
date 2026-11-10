@@ -1,5 +1,18 @@
-import { useEffect, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useSearchParams } from 'react-router'
+import LiveResourceState from '../components/LiveResourceState'
+import { useLiveResource } from '../hooks/useLiveResource'
+import {
+  learningRoles,
+  useOrganizationScope,
+  withOrganization,
+} from '../hooks/useOrganizationScope'
 import {
   EmptyState,
   PageHeading,
@@ -8,12 +21,9 @@ import {
 import {
   createCohort,
   createOrganization,
-  createRoadmap,
   getCohortEnrollments,
   listCohorts,
-  listOrganizations,
   listRoadmaps,
-  publishRoadmapVersion,
   reactivateCohortEnrollment,
   removeCohortEnrollment,
   revokeCohortJoinCode,
@@ -21,115 +31,89 @@ import {
 } from '../learningApi'
 export default function CoordinatorLearningPage() {
   const [search] = useSearchParams()
-  const preferredOrganization = search.get('organizationId')
+  const scope = useOrganizationScope()
   const preferredVersion = search.get('roadmapVersionId')
-  const [organizations, setOrganizations] = useState([])
-  const [organizationId, setOrganizationId] = useState('')
-  const [roadmaps, setRoadmaps] = useState([])
-  const [cohorts, setCohorts] = useState([])
+  return (
+    <LearningSetup
+      key={JSON.stringify([
+        scope.organization?.id,
+        scope.requestedId,
+        preferredVersion,
+      ])}
+      scope={scope}
+      preferredVersion={preferredVersion}
+    />
+  )
+}
+
+function LearningSetup({ scope, preferredVersion }) {
+  const { organization, organizations } = scope
+  const organizationId = organization?.id
+  const allowed = organization && learningRoles.includes(organization.role)
+  const mounted = useRef(false)
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const load = useCallback(async () => {
+    if (!allowed) return null
+    const [roadmaps, cohorts] = await Promise.all([
+      listRoadmaps(organizationId),
+      listCohorts(organizationId),
+    ])
+    return {
+      roadmaps: roadmaps.filter(
+        (row) => !row.organization_id || row.organization_id === organizationId,
+      ),
+      cohorts: cohorts.filter(
+        (row) => !row.organization_id || row.organization_id === organizationId,
+      ),
+    }
+  }, [allowed, organizationId])
+  const resource = useLiveResource(load)
+  const [cohortUpdates, setCohorts] = useState(null)
+  const cohorts = cohortUpdates ?? resource.data?.cohorts ?? []
+  function updateCohorts(update) {
+    setCohorts((current) => update(current ?? resource.data?.cohorts ?? []))
+  }
   const [oneTimeCodes, setOneTimeCodes] = useState({})
   const [rosters, setRosters] = useState({})
   const [rosterOpen, setRosterOpen] = useState({})
   const [rosterLoading, setRosterLoading] = useState('')
   const [organizationName, setOrganizationName] = useState('')
-  const [roadmapName, setRoadmapName] = useState('')
-  const [roadmapDescription, setRoadmapDescription] = useState('')
-  const [topicLines, setTopicLines] = useState('')
   const [cohortName, setCohortName] = useState('')
-  const [versionId, setVersionId] = useState('')
+  const [chosenVersion, setVersionId] = useState(preferredVersion ?? '')
   const [busy, setBusy] = useState('')
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const [reviewVersionId, setReviewVersionId] = useState('')
-  const publishedRoadmaps = roadmaps.filter(
+  const publishedRoadmaps = (resource.data?.roadmaps ?? []).filter(
     (roadmap) => roadmap.status === 'published',
   )
+  const versionId =
+    publishedRoadmaps.find((row) => row.version_id === chosenVersion)
+      ?.version_id ??
+    publishedRoadmaps[0]?.version_id ??
+    ''
   useEffect(() => {
-    let active = true
-    void listOrganizations()
-      .then((items) => {
-        if (!active) return
-        setOrganizations(items)
-        setOrganizationId((current) =>
-          items.some((item) => item.id === preferredOrganization)
-            ? preferredOrganization
-            : items.some((item) => item.id === current)
-              ? current
-              : items[0]?.id || '',
-        )
-      })
-      .catch((cause) => {
-        if (active)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Organizations could not be loaded.',
-          )
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [preferredOrganization])
-  useEffect(() => {
-    if (!organizationId) return
-    let active = true
-    void Promise.all([
-      listRoadmaps(organizationId),
-      listCohorts(organizationId),
-    ])
-      .then(([loadedRoadmaps, loadedCohorts]) => {
-        if (!active) return
-        setRoadmaps(loadedRoadmaps)
-        setCohorts(loadedCohorts)
-        setVersionId((current) =>
-          loadedRoadmaps.some(
-            (roadmap) =>
-              roadmap.version_id === preferredVersion &&
-              roadmap.status === 'published',
-          )
-            ? preferredVersion
-            : loadedRoadmaps.some(
-                  (roadmap) =>
-                    roadmap.version_id === current &&
-                    roadmap.status === 'published',
-                )
-              ? current
-              : loadedRoadmaps.find((roadmap) => roadmap.status === 'published')
-                  ?.version_id || '',
-        )
-      })
-      .catch((cause) => {
-        if (active)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Learning data could not be loaded.',
-          )
-      })
-    return () => {
-      active = false
-    }
-  }, [organizationId, preferredVersion])
-  useEffect(() => {
-    if (search.get('roadmapVersionId') && publishedRoadmaps.length) {
+    if (preferredVersion && versionId === preferredVersion) {
       document
         .getElementById('cohort-setup')
         ?.scrollIntoView?.({ block: 'start' })
     }
-  }, [search, publishedRoadmaps.length])
+  }, [preferredVersion, versionId])
+
   async function addOrganization(event) {
     event.preventDefault()
+    if (busy) return
     setBusy('organization')
     setError('')
     setMessage('')
     try {
       const created = await createOrganization(organizationName.trim())
-      setOrganizations((items) => [...items, created])
-      setOrganizationId(created.id)
+      if (!mounted.current) return
+      scope.rememberOrganization(created)
       setOrganizationName('')
       setMessage('Organization created. Add its first roadmap next.')
     } catch (cause) {
@@ -142,66 +126,10 @@ export default function CoordinatorLearningPage() {
       setBusy('')
     }
   }
-  async function addRoadmap(event) {
-    event.preventDefault()
-    const topics = topicLines
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-    if (topics.length < 1 || topics.length > 24) {
-      setError('Enter between 1 and 24 topics, one per line.')
-      return
-    }
-    setBusy('roadmap')
-    setError('')
-    setMessage('')
-    try {
-      const created = await createRoadmap(organizationId, {
-        name: roadmapName.trim(),
-        description: roadmapDescription.trim(),
-        topics: topics.map((title) => ({ title, description: '' })),
-      })
-      setRoadmaps((items) => [...items, created])
-      setRoadmapName('')
-      setRoadmapDescription('')
-      setTopicLines('')
-      setMessage(
-        'Roadmap draft created. Review and publish it before assigning a cohort.',
-      )
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Roadmap could not be created.',
-      )
-    } finally {
-      setBusy('')
-    }
-  }
-  async function publishDraft(roadmap) {
-    setBusy(roadmap.version_id)
-    setError('')
-    try {
-      const published = await publishRoadmapVersion(
-        organizationId,
-        roadmap.id,
-        roadmap.version_id,
-      )
-      setRoadmaps((items) =>
-        items.map((item) =>
-          item.version_id === published.version_id ? published : item,
-        ),
-      )
-      setVersionId(published.version_id)
-      setMessage('Version published. It is ready for cohort assignment.')
-    } catch (cause) {
-      setError(cause.message)
-    } finally {
-      setBusy('')
-    }
-  }
   async function addCohort(event) {
     event.preventDefault()
+    if (busy || !allowed || !versionId || resource.loading || resource.error)
+      return
     setBusy('cohort')
     setError('')
     setMessage('')
@@ -211,8 +139,17 @@ export default function CoordinatorLearningPage() {
         cohortName.trim(),
         versionId,
       )
+      if (!mounted.current) return
+      if (
+        created.organization_id &&
+        created.organization_id !== organizationId
+      ) {
+        throw new Error(
+          'The cohort could not be confirmed for this organization. Reload before trying again.',
+        )
+      }
       const { invite_code: inviteCode, ...cohortMetadata } = created
-      setCohorts((items) => [...items, cohortMetadata])
+      updateCohorts((items) => [...items, cohortMetadata])
       if (inviteCode) {
         setOneTimeCodes((codes) => ({
           ...codes,
@@ -230,13 +167,23 @@ export default function CoordinatorLearningPage() {
     }
   }
   async function rotateCode(cohort) {
+    if (!allowed || !cohorts.some((row) => row.id === cohort.id)) return
     setBusy(`rotate:${cohort.id}`)
     setError('')
     setMessage('')
     try {
       const rotated = await rotateCohortJoinCode(cohort.id)
+      if (!mounted.current) return
+      if (
+        rotated.id !== cohort.id ||
+        (rotated.organization_id && rotated.organization_id !== organizationId)
+      ) {
+        throw new Error(
+          'The join code could not be confirmed for this cohort. Reload before trying again.',
+        )
+      }
       const { invite_code: inviteCode, ...cohortMetadata } = rotated
-      setCohorts((items) =>
+      updateCohorts((items) =>
         items.map((item) =>
           item.id === cohort.id ? { ...item, ...cohortMetadata } : item,
         ),
@@ -259,12 +206,14 @@ export default function CoordinatorLearningPage() {
     }
   }
   async function revokeCode(cohort) {
+    if (!allowed || !cohorts.some((row) => row.id === cohort.id)) return
     setBusy(`revoke:${cohort.id}`)
     setError('')
     setMessage('')
     try {
       await revokeCohortJoinCode(cohort.id)
-      setCohorts((items) =>
+      if (!mounted.current) return
+      updateCohorts((items) =>
         items.map((item) =>
           item.id === cohort.id
             ? {
@@ -292,6 +241,7 @@ export default function CoordinatorLearningPage() {
     }
   }
   async function toggleRoster(cohort) {
+    if (!allowed || !cohorts.some((row) => row.id === cohort.id)) return
     if (rosterOpen[cohort.id]) {
       setRosterOpen((open) => ({ ...open, [cohort.id]: false }))
       return
@@ -301,6 +251,7 @@ export default function CoordinatorLearningPage() {
       setError('')
       try {
         const enrollments = await getCohortEnrollments(cohort.id)
+        if (!mounted.current) return
         setRosters((current) => ({ ...current, [cohort.id]: enrollments }))
       } catch (cause) {
         setError(
@@ -317,15 +268,18 @@ export default function CoordinatorLearningPage() {
     setRosterOpen((open) => ({ ...open, [cohort.id]: true }))
   }
   async function changeEnrollment(cohort, enrollment, reactivate) {
+    if (busy || !allowed || !cohorts.some((row) => row.id === cohort.id)) return
     setBusy(`${reactivate ? 'reinstate' : 'remove'}:${enrollment.id}`)
     setError('')
     setMessage('')
     try {
       if (reactivate) await reactivateCohortEnrollment(cohort.id, enrollment.id)
       else await removeCohortEnrollment(cohort.id, enrollment.id)
+      if (!mounted.current) return
       const updated = await getCohortEnrollments(cohort.id)
+      if (!mounted.current) return
       setRosters((current) => ({ ...current, [cohort.id]: updated }))
-      setCohorts((current) =>
+      updateCohorts((current) =>
         current.map((item) =>
           item.id === cohort.id
             ? {
@@ -356,9 +310,19 @@ export default function CoordinatorLearningPage() {
       <PageHeading
         eyebrow="Coordinator / Live learning"
         title="Build a learning journey"
-        description="Create an organization, review a roadmap draft, publish it, and invite students to a cohort. Changes here are saved in PostgreSQL."
+        description="Set up an organization, manage its learning roadmaps, and assign a published version to a cohort."
       />
-      {loading && <p role="status">Loading your organizations…</p>}
+      <LiveResourceState {...scope} />
+      {!scope.loading &&
+        !scope.error &&
+        scope.requestedId !== null &&
+        !allowed && (
+          <p className="form-error" role="alert">
+            {organization
+              ? `Your role cannot manage live learning for ${organization.name}.`
+              : 'This organization is unavailable.'}
+          </p>
+        )}
       {error && (
         <p className="form-error" role="alert">
           {error}
@@ -394,13 +358,18 @@ export default function CoordinatorLearningPage() {
                 : 'Create organization'}{' '}
             </button>
           </form>
-          {organizations.length > 0 && (
+          {!scope.managed && organizations.length > 0 && (
             <label className="form-field">
               <span>Working in</span>
               <select
-                value={organizationId}
-                onChange={(event) => setOrganizationId(event.target.value)}
+                value={organizationId ?? ''}
+                onChange={(event) =>
+                  scope.selectOrganization(event.target.value)
+                }
               >
+                <option value="" disabled>
+                  Select an organization
+                </option>
                 {organizations.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -409,113 +378,28 @@ export default function CoordinatorLearningPage() {
               </select>
             </label>
           )}
+          {scope.managed && organization && (
+            <p>Working in {organization.name}</p>
+          )}
         </section>
 
         <section className="workspace-card learning-step">
           <SectionHeading
             title="2. Roadmap"
-            description="Create a draft, then review and publish an immutable version"
+            description="Manage roadmap drafts, submissions, and published versions"
           />
-          {organizationId ? (
-            <form className="learning-form" onSubmit={addRoadmap}>
-              <label className="form-field">
-                <span>Roadmap name</span>
-                <input
-                  required
-                  minLength={2}
-                  maxLength={200}
-                  value={roadmapName}
-                  onChange={(event) => setRoadmapName(event.target.value)}
-                  placeholder="Career readiness"
-                />
-              </label>
-              <label className="form-field">
-                <span>Description</span>
-                <input
-                  maxLength={2000}
-                  value={roadmapDescription}
-                  onChange={(event) =>
-                    setRoadmapDescription(event.target.value)
-                  }
-                  placeholder="What students will learn"
-                />
-              </label>
-              <label className="form-field">
-                <span>Topics, one per line</span>
-                <textarea
-                  required
-                  rows={5}
-                  value={topicLines}
-                  onChange={(event) => setTopicLines(event.target.value)}
-                  placeholder={
-                    'Set career goals\nBuild a portfolio\nPractice interviews'
-                  }
-                />
-                <small>
-                  1–24 topics. Each topic becomes one week in this first
-                  version.
-                </small>
-              </label>
-              <button className="workspace-button" disabled={busy !== ''}>
-                {busy === 'roadmap' ? 'Creating…' : 'Create roadmap draft'}
-              </button>
-            </form>
+          {allowed ? (
+            <Link
+              className="workspace-button"
+              to={
+                '/app/coordinator/roadmaps?' +
+                new URLSearchParams({ organizationId })
+              }
+            >
+              Browse organization roadmaps
+            </Link>
           ) : (
-            <p>Create an organization to add a roadmap.</p>
-          )}
-          {roadmaps.length > 0 && (
-            <div className="learning-list">
-              {roadmaps.map((roadmap) => (
-                <div className="learning-list-item" key={roadmap.id}>
-                  <strong>{roadmap.name}</strong>
-                  <span>
-                    Version {roadmap.version_number} · {roadmap.topics.length}{' '}
-                    topics · {roadmap.status}
-                  </span>
-                  <Link
-                    className="workspace-text-link"
-                    to={`/app/coordinator/roadmaps/${roadmap.id}/versions?organizationId=${organizationId}`}
-                  >
-                    Review version structure →
-                  </Link>
-                  {roadmap.status === 'draft' && (
-                    <>
-                      <button
-                        type="button"
-                        className="workspace-button workspace-button-outline"
-                        disabled={busy !== ''}
-                        onClick={() => setReviewVersionId(roadmap.version_id)}
-                      >
-                        Review draft for publication
-                      </button>
-                      {reviewVersionId === roadmap.version_id && (
-                        <div
-                          className="roadmap-review"
-                          role="region"
-                          aria-label="Publication review"
-                        >
-                          <p>
-                            {roadmap.topics.length} topics in version{' '}
-                            {roadmap.version_number}. Publishing freezes this
-                            version; future edits require a new draft.
-                          </p>
-                          <button
-                            type="button"
-                            className="workspace-button"
-                            disabled={busy !== ''}
-                            onClick={() => publishDraft(roadmap)}
-                          >
-                            {busy === roadmap.version_id
-                              ? 'Publishing…'
-                              : 'Publish reviewed draft'}
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
+            <p>Create or select an organization to manage roadmaps.</p>
           )}
         </section>
 
@@ -524,189 +408,214 @@ export default function CoordinatorLearningPage() {
             title="3. Cohort"
             description="Assign an exact roadmap version and share its join code"
           />
-          {publishedRoadmaps.length ? (
-            <form className="learning-form" onSubmit={addCohort}>
-              <label className="form-field">
-                <span>Cohort name</span>
-                <input
-                  required
-                  minLength={2}
-                  maxLength={200}
-                  value={cohortName}
-                  onChange={(event) => setCohortName(event.target.value)}
-                  placeholder="2026 placement group"
-                />
-              </label>
-              <label className="form-field">
-                <span>Roadmap</span>
-                <select
-                  required
-                  value={versionId}
-                  onChange={(event) => setVersionId(event.target.value)}
-                >
-                  {publishedRoadmaps.map((roadmap) => (
-                    <option key={roadmap.version_id} value={roadmap.version_id}>
-                      {roadmap.name} · v{roadmap.version_number}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="workspace-button" disabled={busy !== ''}>
-                {busy === 'cohort' ? 'Creating…' : 'Create cohort'}
-              </button>
-            </form>
-          ) : (
-            <p>Publish a roadmap before creating a cohort.</p>
-          )}
-          {cohorts.length ? (
-            <div className="learning-list">
-              {cohorts.map((cohort) => (
-                <div className="learning-list-item" key={cohort.id}>
-                  <div>
-                    <strong>{cohort.name}</strong>
-                    <span>
-                      {cohort.roadmap_name} · {cohort.student_count} students
-                    </span>
-                  </div>
-                  <div className="learning-invite">
-                    <span>
-                      Student join code · {cohort.join_code_status || 'unknown'}
-                    </span>
-                    {cohort.invite_code_expires_at && (
-                      <small>
-                        Expires{' '}
-                        {new Date(
-                          cohort.invite_code_expires_at,
-                        ).toLocaleDateString()}
-                      </small>
-                    )}
-                    {oneTimeCodes[cohort.id] ? (
-                      <>
-                        <code>{oneTimeCodes[cohort.id]}</code>
-                        <small>
-                          Copy this code now. It will not be shown again.
-                        </small>
-                      </>
-                    ) : (
-                      <small>
-                        {cohort.join_code_status === 'active'
-                          ? 'The code was shown when it was created or rotated.'
-                          : 'No usable join code is available.'}
-                      </small>
-                    )}
-                    <div className="learning-actions">
-                      <button
-                        type="button"
-                        className="workspace-button workspace-button-outline"
-                        disabled={busy !== ''}
-                        onClick={() => void rotateCode(cohort)}
-                      >
-                        {busy === `rotate:${cohort.id}`
-                          ? 'Rotating…'
-                          : 'Rotate join code'}
-                      </button>
-                      <button
-                        type="button"
-                        className="workspace-button workspace-button-outline"
-                        disabled={
-                          busy !== '' || cohort.join_code_status === 'revoked'
-                        }
-                        onClick={() => void revokeCode(cohort)}
-                      >
-                        {busy === `revoke:${cohort.id}`
-                          ? 'Revoking…'
-                          : 'Revoke join code'}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="learning-roster-controls">
-                    <button
-                      type="button"
-                      className="workspace-button workspace-button-outline"
-                      disabled={rosterLoading === cohort.id || busy !== ''}
-                      onClick={() => void toggleRoster(cohort)}
-                    >
-                      {rosterLoading === cohort.id
-                        ? 'Loading roster…'
-                        : rosterOpen[cohort.id]
-                          ? 'Hide roster'
-                          : 'Show roster'}
-                    </button>
-                    {rosterOpen[cohort.id] && (
-                      <div
-                        className="learning-roster"
-                        aria-label={`${cohort.name} roster`}
-                      >
-                        {rosters[cohort.id]?.length ? (
-                          rosters[cohort.id].map((enrollment) => (
-                            <div
-                              className="learning-roster-item"
-                              key={enrollment.id}
-                            >
-                              <div>
-                                <strong>{enrollment.display_name}</strong>
-                                <span>
-                                  {enrollment.status === 'active'
-                                    ? 'Active'
-                                    : `Inactive · ${enrollment.end_reason || 'ended'}`}
-                                </span>
-                              </div>
-                              {enrollment.status === 'active' ? (
-                                <button
-                                  type="button"
-                                  className="workspace-button workspace-button-outline"
-                                  disabled={busy !== ''}
-                                  onClick={() =>
-                                    void changeEnrollment(
-                                      cohort,
-                                      enrollment,
-                                      false,
-                                    )
-                                  }
-                                  aria-label={`Remove ${enrollment.display_name}`}
-                                >
-                                  Remove
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="workspace-button workspace-button-outline"
-                                  disabled={busy !== ''}
-                                  onClick={() =>
-                                    void changeEnrollment(
-                                      cohort,
-                                      enrollment,
-                                      true,
-                                    )
-                                  }
-                                  aria-label={`Reinstate ${enrollment.display_name}`}
-                                >
-                                  Reinstate
-                                </button>
-                              )}
-                            </div>
-                          ))
-                        ) : (
-                          <p>No student enrollments yet.</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <Link
-                    className="workspace-text-link"
-                    to={`/app/coordinator/learning/${cohort.id}`}
-                  >
-                    View live progress →
-                  </Link>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              title="No cohorts yet"
-              description="Create a cohort to invite a student and see their progress here."
+          {allowed && (
+            <LiveResourceState
+              {...resource}
+              loading={false}
+              error={
+                resource.error
+                  ? `Could not load learning data for ${organization.name}. ${resource.error}`
+                  : ''
+              }
             />
           )}
+          {allowed && resource.loading && (
+            <p role="status">Loading learning data for {organization.name}…</p>
+          )}
+          {allowed &&
+            resource.data &&
+            (publishedRoadmaps.length ? (
+              <form className="learning-form" onSubmit={addCohort}>
+                <label className="form-field">
+                  <span>Cohort name</span>
+                  <input
+                    required
+                    minLength={2}
+                    maxLength={200}
+                    value={cohortName}
+                    onChange={(event) => setCohortName(event.target.value)}
+                    placeholder="2026 placement group"
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Roadmap</span>
+                  <select
+                    required
+                    value={versionId}
+                    onChange={(event) => setVersionId(event.target.value)}
+                  >
+                    {publishedRoadmaps.map((roadmap) => (
+                      <option
+                        key={roadmap.version_id}
+                        value={roadmap.version_id}
+                      >
+                        {roadmap.name} · v{roadmap.version_number}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button className="workspace-button" disabled={busy !== ''}>
+                  {busy === 'cohort' ? 'Creating…' : 'Create cohort'}
+                </button>
+              </form>
+            ) : (
+              <p>Publish a roadmap before creating a cohort.</p>
+            ))}
+          {allowed &&
+            resource.data &&
+            (cohorts.length ? (
+              <div className="learning-list">
+                {cohorts.map((cohort) => (
+                  <div className="learning-list-item" key={cohort.id}>
+                    <div>
+                      <strong>{cohort.name}</strong>
+                      <span>
+                        {cohort.roadmap_name} · {cohort.student_count} students
+                      </span>
+                    </div>
+                    <div className="learning-invite">
+                      <span>
+                        Student join code ·{' '}
+                        {cohort.join_code_status || 'unknown'}
+                      </span>
+                      {cohort.invite_code_expires_at && (
+                        <small>
+                          Expires{' '}
+                          {new Date(
+                            cohort.invite_code_expires_at,
+                          ).toLocaleDateString()}
+                        </small>
+                      )}
+                      {oneTimeCodes[cohort.id] ? (
+                        <>
+                          <code>{oneTimeCodes[cohort.id]}</code>
+                          <small>
+                            Copy this code now. It will not be shown again.
+                          </small>
+                        </>
+                      ) : (
+                        <small>
+                          {cohort.join_code_status === 'active'
+                            ? 'The code was shown when it was created or rotated.'
+                            : 'No usable join code is available.'}
+                        </small>
+                      )}
+                      <div className="learning-actions">
+                        <button
+                          type="button"
+                          className="workspace-button workspace-button-outline"
+                          disabled={busy !== ''}
+                          onClick={() => void rotateCode(cohort)}
+                        >
+                          {busy === `rotate:${cohort.id}`
+                            ? 'Rotating…'
+                            : 'Rotate join code'}
+                        </button>
+                        <button
+                          type="button"
+                          className="workspace-button workspace-button-outline"
+                          disabled={
+                            busy !== '' || cohort.join_code_status === 'revoked'
+                          }
+                          onClick={() => void revokeCode(cohort)}
+                        >
+                          {busy === `revoke:${cohort.id}`
+                            ? 'Revoking…'
+                            : 'Revoke join code'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="learning-roster-controls">
+                      <button
+                        type="button"
+                        className="workspace-button workspace-button-outline"
+                        disabled={rosterLoading === cohort.id || busy !== ''}
+                        onClick={() => void toggleRoster(cohort)}
+                      >
+                        {rosterLoading === cohort.id
+                          ? 'Loading roster…'
+                          : rosterOpen[cohort.id]
+                            ? 'Hide roster'
+                            : 'Show roster'}
+                      </button>
+                      {rosterOpen[cohort.id] && (
+                        <div
+                          className="learning-roster"
+                          aria-label={`${cohort.name} roster`}
+                        >
+                          {rosters[cohort.id]?.length ? (
+                            rosters[cohort.id].map((enrollment) => (
+                              <div
+                                className="learning-roster-item"
+                                key={enrollment.id}
+                              >
+                                <div>
+                                  <strong>{enrollment.display_name}</strong>
+                                  <span>
+                                    {enrollment.status === 'active'
+                                      ? 'Active'
+                                      : `Inactive · ${enrollment.end_reason || 'ended'}`}
+                                  </span>
+                                </div>
+                                {enrollment.status === 'active' ? (
+                                  <button
+                                    type="button"
+                                    className="workspace-button workspace-button-outline"
+                                    disabled={busy !== ''}
+                                    onClick={() =>
+                                      void changeEnrollment(
+                                        cohort,
+                                        enrollment,
+                                        false,
+                                      )
+                                    }
+                                    aria-label={`Remove ${enrollment.display_name}`}
+                                  >
+                                    Remove
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="workspace-button workspace-button-outline"
+                                    disabled={busy !== ''}
+                                    onClick={() =>
+                                      void changeEnrollment(
+                                        cohort,
+                                        enrollment,
+                                        true,
+                                      )
+                                    }
+                                    aria-label={`Reinstate ${enrollment.display_name}`}
+                                  >
+                                    Reinstate
+                                  </button>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <p>No student enrollments yet.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <Link
+                      className="workspace-text-link"
+                      to={withOrganization(
+                        `/app/coordinator/learning/${cohort.id}`,
+                        organizationId,
+                      )}
+                    >
+                      View live progress →
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No cohorts yet"
+                description="Create a cohort to invite a student and see their progress here."
+              />
+            ))}
         </section>
       </div>
     </>

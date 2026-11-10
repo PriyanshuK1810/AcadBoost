@@ -30,6 +30,7 @@ export function useLiveResource(loader) {
                 cause instanceof Error
                   ? cause.message
                   : 'Unable to load your data.',
+              errorStatus: cause?.status,
               loader,
               revision,
             })

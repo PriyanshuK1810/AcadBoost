@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { useContext, useEffect, useRef, useState } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { PageHeading } from '../components/WorkspaceUI'
+import ActivityPlanSteps from '../components/ActivityPlanSteps'
+import RoadmapStatusBadge from '../components/RoadmapStatusBadge'
 import {
   getPlan,
   savePlan,
@@ -10,43 +12,71 @@ import {
 } from '../activityPlanApi'
 import useUnsavedChanges from '../hooks/useUnsavedChanges'
 import { outlineProblems } from '../outlineValidation'
+import { listRoadmapVersions } from '../learningApi'
+import { WorkspaceContext } from '../hooks/useWorkspace'
+import { learningRoles, withOrganization } from '../hooks/useOrganizationScope'
+import LiveResourceState from '../components/LiveResourceState'
 const uid = () => crypto.randomUUID()
 const topicsOf = (p) =>
   p.phases.flatMap((ph) => ph.weeks.flatMap((w) => w.topics))
+const countLabel = (count, singular, plural = singular + 's') =>
+  `${count} ${count === 1 ? singular : plural}`
 export default function ActivityPlanPage() {
   const { planId } = useParams()
   const [search] = useSearchParams()
   const org = search.get('organizationId')
+  const scope = useContext(WorkspaceContext)?.organizationScope
+  if (scope?.loading || scope?.error) return <LiveResourceState {...scope} />
+  if (scope && org && !learningRoles.includes(scope.organization?.role)) {
+    return (
+      <>
+        <p className="form-error" role="alert">This activity plan is unavailable in the selected organization.</p>
+        <Link to={withOrganization('/app/coordinator/roadmaps', scope.organization?.id)}>Back to Roadmaps</Link>
+      </>
+    )
+  }
   return (
     <ActivityPlanReview key={`${org}:${planId}`} org={org} planId={planId} />
   )
 }
 function ActivityPlanReview({ org, planId }) {
-  const navigate = useNavigate()
   const [plan, setPlan] = useState(null),
     [dirty, setDirty] = useState(false),
-    [busy, setBusy] = useState(false),
+    [operation, setOperation] = useState(''),
     [error, setError] = useState(''),
     [tab, setTab] = useState('draft'),
-    [reload, setReload] = useState(0)
+    [reload, setReload] = useState(0),
+    [conversionUncertain, setConversionUncertain] = useState(false)
+  const request = useRef(null)
+  const busy = Boolean(operation)
   useUnsavedChanges(dirty)
   useEffect(() => {
+    if (!org) return
     let active = true,
       timer
     async function load() {
       try {
         const p = await getPlan(org, planId)
         if (!active) return
+        if (p.id !== planId || p.organization_id !== org)
+          throw new Error('Invalid activity plan response')
         setPlan(p)
+        setConversionUncertain(false)
         if (['queued', 'extracting'].includes(p.status))
           timer = setTimeout(load, 2000)
       } catch (e) {
-        if (active) setError(e.message)
+        if (active)
+          setError(
+            [401, 403, 404].includes(e.status)
+              ? 'This activity plan is unavailable in the selected organization.'
+              : 'The activity plan could not be loaded. Reload the saved review to try again.',
+          )
       }
     }
     void load()
     return () => {
       active = false
+      request.current = null
       clearTimeout(timer)
     }
   }, [org, planId, reload])
@@ -60,16 +90,77 @@ function ActivityPlanReview({ org, planId }) {
     setDirty(true)
     setError('')
   }
-  async function action(fn) {
-    setBusy(true)
+  async function action(label, fn, failure) {
+    if (request.current) return
+    const current = {}
+    request.current = current
+    setOperation(label)
     setError('')
     try {
-      await fn()
-    } catch (e) {
-      setError(e.message)
+      await fn(() => request.current === current)
+    } catch (cause) {
+      if (request.current !== current) return
+      setError(failure(cause))
     } finally {
-      setBusy(false)
+      if (request.current === current) {
+        request.current = null
+        setOperation('')
+      }
     }
+  }
+  function reloadSavedReview() {
+    if (
+      dirty &&
+      !window.confirm(
+        'Discard your local edits and load the latest saved review?',
+      )
+    )
+      return
+    setDirty(false)
+    setError('')
+    setPlan(null)
+    setReload((value) => value + 1)
+  }
+  function saveReview() {
+    void action(
+      'Saving review…',
+      async (isCurrent) => {
+        const saved = await savePlan(org, planId, plan)
+        if (!isCurrent()) return
+        if (saved.id !== planId || saved.organization_id !== org)
+          throw new Error('Invalid saved review response')
+        setPlan(saved)
+        setDirty(false)
+      },
+      (cause) => {
+        if (cause.status === 409)
+          return 'Review changed on the server. Your edits are still here. Reload the saved review before trying again.'
+        if ([401, 403].includes(cause.status))
+          return 'You do not have permission to save this review. Your edits are still here.'
+        return 'The review could not be saved. Your edits are still here. Check the outline and source decisions, then try again.'
+      },
+    )
+  }
+  function createDraft() {
+    if (blocked) return
+    void action(
+      'Creating roadmap draft…',
+      async (isCurrent) => {
+        const result = await convertPlan(org, planId, plan.revision)
+        if (!isCurrent()) return
+        if (!result.roadmap_id || !result.version_id)
+          throw new Error('Invalid conversion response')
+        setPlan({ ...plan, ...result, status: 'converted' })
+      },
+      (cause) => {
+        if ([401, 403].includes(cause.status))
+          return 'You do not have permission to create this draft. Your saved review is still available.'
+        if (cause.status === 422)
+          return 'The draft could not be created. Your saved review is intact. Check the outline and source decisions before trying again.'
+        setConversionUncertain(true)
+        return 'Draft creation could not be confirmed. Reload the saved review to check whether it was created before trying again.'
+      },
+    )
   }
   function move(rows, index, delta) {
     const target = index + delta
@@ -97,8 +188,9 @@ function ActivityPlanReview({ org, planId }) {
         })
       })
   }
-  async function download() {
+  async function download(isCurrent) {
     const blob = await downloadPlan(org, planId)
+    if (!isCurrent()) return
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -122,48 +214,63 @@ function ActivityPlanReview({ org, planId }) {
   if (plan && (plan.name.trim().length < 2 || plan.name.length > 200))
     problems.unshift('Plan name: enter 2–200 characters.')
   const invalid = problems.length > 0
-  const blocked = dirty || unresolved || !plan?.review_confirmed || invalid
-  const draftUrl = (p) =>
-    `/app/coordinator/roadmaps/${p.roadmap_id}/versions?organizationId=${org}&activityPlanId=${planId}`
+  const blocked =
+    dirty ||
+    unresolved ||
+    !plan?.review_confirmed ||
+    invalid ||
+    conversionUncertain
+  const back =
+    '/app/coordinator/roadmaps' +
+    (org ? '?' + new URLSearchParams({ organizationId: org }) : '')
   return (
-    <>
+    <div className="activity-plan-flow">
       <PageHeading
         eyebrow="Coordinator / Roadmaps / Activity plan"
         title={plan?.name || 'Activity plan'}
         description="Check the source, correct the outline, then create an editable roadmap draft."
       />
-      <Link to="/app/coordinator/roadmaps">← All roadmaps</Link>
+      <Link className="workspace-text-link" to={back}>
+        ← All roadmaps
+      </Link>
+      <ActivityPlanSteps step={plan?.status === 'converted' ? 2 : 1} />
+      {!org && (
+        <p className="form-error" role="alert">
+          Select an organization from Roadmaps to open this import.
+        </p>
+      )}
       {error && (
         <div>
           <p className="form-error" role="alert">
             {error}
           </p>
           <button
-            onClick={() => {
-              if (
-                !dirty ||
-                window.confirm(
-                  'Discard your local edits and load the latest saved review?',
-                )
-              ) {
-                setDirty(false)
-                setError('')
-                setReload((n) => n + 1)
-              }
-            }}
+            type="button"
+            className="workspace-button workspace-button-outline"
+            disabled={busy}
+            onClick={reloadSavedReview}
           >
             Reload saved review
           </button>
         </div>
       )}
-      {!plan && <p role="status">Loading activity plan…</p>}
+      {org && !plan && !error && <p role="status">Loading activity plan…</p>}
       {plan && (
         <>
           <div className="plan-meta">
             <span>
               {plan.filename} · {plan.status}
             </span>
-            <button onClick={() => action(download)} disabled={busy}>
+            <button
+              onClick={() =>
+                action(
+                  'Downloading PDF…',
+                  download,
+                  () => 'The source PDF could not be downloaded. Try again.',
+                )
+              }
+              disabled={Boolean(busy)}
+            >
               Download source PDF
             </button>
           </div>
@@ -187,10 +294,26 @@ function ActivityPlanReview({ org, planId }) {
                 className="workspace-button"
                 disabled={busy}
                 onClick={() =>
-                  action(async () => {
-                    setPlan(await retryPlan(org, planId, plan.revision))
-                    setReload((n) => n + 1)
-                  })
+                  action(
+                    'Restarting extraction…',
+                    async (isCurrent) => {
+                      const retried = await retryPlan(
+                        org,
+                        planId,
+                        plan.revision,
+                      )
+                      if (!isCurrent()) return
+                      if (
+                        retried.id !== planId ||
+                        retried.organization_id !== org
+                      )
+                        throw new Error('Invalid retry response')
+                      setPlan(retried)
+                      setReload((n) => n + 1)
+                    },
+                    () =>
+                      'Extraction could not be restarted. Reload the saved review to check its status.',
+                  )
                 }
               >
                 Retry extraction
@@ -199,7 +322,7 @@ function ActivityPlanReview({ org, planId }) {
           )}
           {plan.status === 'converted' && (
             <section className="workspace-card">
-              <h2>Draft created</h2>
+              <ImportedDraft plan={plan} org={org} />
               <details>
                 <summary>Source text and review decisions</summary>
                 {plan.warnings.map((w) => (
@@ -223,13 +346,6 @@ function ActivityPlanReview({ org, planId }) {
                   </article>
                 ))}
               </details>
-              <p>
-                The source remains available here. Edit and publish the linked
-                roadmap when ready.
-              </p>
-              <Link className="workspace-button" to={draftUrl(plan)}>
-                Open draft
-              </Link>
             </section>
           )}
           {plan.status === 'ready' && (
@@ -281,8 +397,13 @@ function ActivityPlanReview({ org, planId }) {
                 >
                   <h2>Suggested outline</h2>
                   <p>
-                    Dates remain source text. Set deadlines after assigning a
-                    cohort.
+                    {countLabel(plan.proposal.phases.length, 'phase')} ·{' '}
+                    {countLabel(plan.proposal.phases.reduce(
+                      (total, phase) => total + phase.weeks.length, 0,
+                    ), 'week')} · {countLabel(topics.length, 'activity', 'activities')}
+                  </p>
+                  <p>
+                    Conversion carries activity descriptions. The roadmap description starts blank. Dates remain in the source text.
                   </p>
                   <label className="form-field">
                     Plan name
@@ -305,8 +426,8 @@ function ActivityPlanReview({ org, planId }) {
                         className="roadmap-phase"
                       >
                         <summary>
-                          {ph.title || 'Untitled phase'} · {ph.weeks.length}{' '}
-                          weeks
+                          {ph.title || 'Untitled phase'} ·{' '}
+                          {countLabel(ph.weeks.length, 'week')}
                         </summary>
                         <label className="form-field">
                           Phase title
@@ -354,8 +475,8 @@ function ActivityPlanReview({ org, planId }) {
                             className="roadmap-week"
                           >
                             <summary>
-                              {w.title || 'Untitled week'} · {w.topics.length}{' '}
-                              activities
+                              {w.title || 'Untitled week'} ·{' '}
+                              {countLabel(w.topics.length, 'activity', 'activities')}
                             </summary>
                             <label className="form-field">
                               Week title
@@ -710,6 +831,10 @@ function ActivityPlanReview({ org, planId }) {
                 </section>
               </div>
               <div className="plan-save-bar">
+                <p>
+                  Source review confirms the outline against the PDF. Submit the
+                  created Draft for roadmap review in Roadmap Versions.
+                </p>
                 {invalid && (
                   <details className="outline-validation" open>
                     <summary>
@@ -737,7 +862,7 @@ function ActivityPlanReview({ org, planId }) {
                 </label>
                 <p role="status">
                   {busy
-                    ? 'Saving…'
+                    ? operation
                     : error && dirty
                       ? 'Save failed'
                       : dirty
@@ -760,28 +885,14 @@ function ActivityPlanReview({ org, planId }) {
                   <button
                     className="workspace-button workspace-button-outline"
                     disabled={busy || !dirty}
-                    onClick={() =>
-                      action(async () => {
-                        setPlan(await savePlan(org, planId, plan))
-                        setDirty(false)
-                      })
-                    }
+                    onClick={saveReview}
                   >
                     Save review
                   </button>
                   <button
                     className="workspace-button"
                     disabled={busy || Boolean(blocked)}
-                    onClick={() =>
-                      action(async () => {
-                        const result = await convertPlan(
-                          org,
-                          planId,
-                          plan.revision,
-                        )
-                        navigate(draftUrl(result))
-                      })
-                    }
+                    onClick={createDraft}
                   >
                     Create roadmap draft
                   </button>
@@ -791,6 +902,113 @@ function ActivityPlanReview({ org, planId }) {
           )}
         </>
       )}
-    </>
+    </div>
+  )
+}
+
+function ImportedDraft({ plan, org }) {
+  const { roadmap_id: roadmapId, version_id: versionId } = plan
+  const [version, setVersion] = useState(null)
+  useEffect(() => {
+    if (!roadmapId || !versionId) return
+    let active = true
+    listRoadmapVersions(org, roadmapId)
+      .then((rows) => {
+        if (active) {
+          setVersion(
+            rows.find(
+              (row) =>
+                row.organization_id === org &&
+                row.id === roadmapId &&
+                row.version_id === versionId,
+            ) || false,
+          )
+        }
+      })
+      .catch(() => {
+        if (active) setVersion(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [org, roadmapId, versionId])
+
+  const versionNumber = version?.version_number ?? plan.version_number
+  const query = new URLSearchParams({
+    organizationId: org,
+    versionId,
+    activityPlanId: plan.id,
+  })
+  const url =
+    '/app/coordinator/roadmaps/' +
+    encodeURIComponent(roadmapId) +
+    '/versions?' +
+    query
+  return (
+    <div className="activity-plan-result">
+      <h2>Draft created successfully</h2>
+      <p role="status">
+        This PDF was converted to a roadmap. Its source and review decisions
+        remain available below.
+      </p>
+      {roadmapId && versionId ? (
+        <>
+          <dl className="activity-plan-result-details">
+            <div>
+              <dt>Roadmap</dt>
+              <dd>{version?.name || plan.name}</dd>
+            </div>
+            {Number.isInteger(versionNumber) && (
+              <div>
+                <dt>Version</dt>
+                <dd>v{versionNumber}</dd>
+              </div>
+            )}
+            {version && (
+              <>
+                <div>
+                  <dt>Revision</dt>
+                  <dd>{version.revision}</dd>
+                </div>
+                <div>
+                  <dt>Current status</dt>
+                  <dd>
+                    <RoadmapStatusBadge status={version.status} />
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+          {version === null && (
+            <p role="status">Loading the current version details…</p>
+          )}
+          {version === false && (
+            <p>
+              The current version details could not be loaded here. Open Roadmap
+              Versions to check the saved version.
+            </p>
+          )}
+          <div className="activity-plan-actions">
+            <Link className="workspace-button" to={url}>
+              Open in Roadmap Versions
+            </Link>
+            <Link
+              className="workspace-button workspace-button-outline"
+              to={
+                '/app/coordinator/activity-plans/new?' +
+                new URLSearchParams({ organizationId: org })
+              }
+            >
+              Import another PDF
+            </Link>
+          </div>
+        </>
+      ) : (
+        <p className="form-error" role="alert">
+          The linked version could not be identified. Return to Roadmaps to
+          locate the saved draft.
+        </p>
+      )}
+    </div>
   )
 }

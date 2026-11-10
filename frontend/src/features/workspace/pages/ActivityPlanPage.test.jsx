@@ -10,6 +10,8 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ActivityPlanPage from './ActivityPlanPage'
 import * as api from '../activityPlanApi'
+import { listRoadmapVersions } from '../learningApi'
+vi.mock('../learningApi', () => ({ listRoadmapVersions: vi.fn() }))
 vi.mock('../activityPlanApi', () => ({
   getPlan: vi.fn(),
   savePlan: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock('../activityPlanApi', () => ({
 }))
 const plan = {
   id: 'p1',
+  organization_id: 'o1',
   name: 'Plan',
   status: 'ready',
   revision: 2,
@@ -85,9 +88,7 @@ it('requires source resolution and confirmation, preserving edits when a revisio
     target: { value: 'Administrative note' },
   })
   fireEvent.click(screen.getByLabelText(/I have checked/))
-  api.savePlan.mockRejectedValue(
-    new Error('Review changed. Reload before saving.'),
-  )
+  api.savePlan.mockRejectedValue({ status: 409 })
   fireEvent.click(screen.getByRole('button', { name: 'Save review' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('Review changed')
   expect(screen.getByLabelText('Exclusion reason for source 1')).toHaveValue(
@@ -204,4 +205,155 @@ it('opens the source decision linked to an activity’s stable reference', async
     'aria-selected',
     'true',
   )
+})
+
+const reviewedPlan = {
+  ...plan,
+  review_confirmed: true,
+  review_items: [
+    { ...plan.review_items[0], disposition: 'included', topic_id: 't' },
+  ],
+}
+const createdDraft = { roadmap_id: 'r1', version_id: 'v1', version_number: 1 }
+const draftVersion = {
+  id: 'r1',
+  organization_id: 'o1',
+  version_id: 'v1',
+  version_number: 1,
+  status: 'draft',
+  name: 'Plan',
+  revision: 7,
+}
+const draftLink =
+  '/app/coordinator/roadmaps/r1/versions?organizationId=o1&versionId=v1&activityPlanId=p1'
+
+it('converts the saved source revision once and shows the server version details and exact link', async () => {
+  api.getPlan.mockResolvedValue(reviewedPlan)
+  let finish
+  api.convertPlan.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  listRoadmapVersions.mockResolvedValue([draftVersion])
+  show()
+  const create = await screen.findByRole('button', {
+    name: 'Create roadmap draft',
+  })
+  act(() => {
+    create.click()
+    create.click()
+  })
+  expect(api.convertPlan).toHaveBeenCalledExactlyOnceWith('o1', 'p1', 2)
+  expect(screen.getByText('Creating roadmap draft…')).toBeVisible()
+  await act(async () => finish(createdDraft))
+  expect(
+    await screen.findByRole('heading', { name: 'Draft created successfully' }),
+  ).toBeVisible()
+  expect(await screen.findByText('7')).toBeVisible()
+  expect(
+    screen.getByText('Draft', { selector: '.roadmap-status-badge' }),
+  ).toBeVisible()
+  expect(
+    screen.getByRole('link', { name: 'Open in Roadmap Versions' }),
+  ).toHaveAttribute('href', draftLink)
+  expect(listRoadmapVersions).toHaveBeenCalledExactlyOnceWith('o1', 'r1')
+})
+
+it('reads saved state after uncertain conversion and keeps a confirmed link if metadata is unavailable', async () => {
+  api.getPlan
+    .mockResolvedValueOnce(reviewedPlan)
+    .mockResolvedValueOnce({
+      ...reviewedPlan,
+      ...createdDraft,
+      status: 'converted',
+    })
+  api.convertPlan.mockRejectedValueOnce(new Error('Connection interrupted'))
+  listRoadmapVersions.mockRejectedValueOnce(
+    new Error('Metadata temporarily unavailable'),
+  )
+  show()
+  const create = await screen.findByRole('button', {
+    name: 'Create roadmap draft',
+  })
+  fireEvent.click(create)
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Draft creation could not be confirmed',
+  )
+  expect(create).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Reload saved review' }))
+  expect(
+    await screen.findByRole('link', { name: 'Open in Roadmap Versions' }),
+  ).toHaveAttribute('href', draftLink)
+  expect(
+    await screen.findByText(/current version details could not be loaded/),
+  ).toBeVisible()
+  expect(api.convertPlan).toHaveBeenCalledTimes(1)
+  expect(api.getPlan).toHaveBeenCalledTimes(2)
+})
+
+it('does not apply an old conversion result after switching organizations', async () => {
+  api.getPlan
+    .mockResolvedValueOnce(reviewedPlan)
+    .mockResolvedValueOnce({
+      ...plan,
+      organization_id: 'other',
+      name: 'Other plan',
+    })
+  let finish
+  api.convertPlan.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const router = show()
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Create roadmap draft' }),
+  )
+  await act(async () => router.navigate('/plans/p1?organizationId=other'))
+  await screen.findByRole('heading', { name: 'Other plan' })
+  await act(async () => finish(createdDraft))
+  expect(
+    screen.queryByRole('link', { name: 'Open in Roadmap Versions' }),
+  ).not.toBeInTheDocument()
+  expect(listRoadmapVersions).not.toHaveBeenCalled()
+})
+
+it('shows the backend extraction failure and offers the saved plan retry', async () => {
+  api.getPlan
+    .mockResolvedValueOnce({
+      ...plan,
+      status: 'failed',
+      failure: { message: 'No selectable text was found.' },
+    })
+    .mockResolvedValueOnce({ ...plan, status: 'extracting' })
+  api.retryPlan.mockResolvedValueOnce({ ...plan, status: 'queued' })
+  show()
+  expect(await screen.findByText('No selectable text was found.')).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Create roadmap draft' }),
+  ).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry extraction' }))
+  expect(
+    await screen.findByRole('heading', { name: 'Extracting page text' }),
+  ).toBeVisible()
+  expect(api.retryPlan).toHaveBeenCalledExactlyOnceWith('o1', 'p1', 2)
+})
+
+it('prevents editing and conversion when the backend denies access to the import', async () => {
+  api.getPlan.mockRejectedValueOnce({
+    status: 403,
+    message: 'private internal text',
+  })
+  show()
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'This activity plan is unavailable',
+  )
+  expect(screen.queryByText('private internal text')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Create roadmap draft' }),
+  ).not.toBeInTheDocument()
+  expect(api.convertPlan).not.toHaveBeenCalled()
 })

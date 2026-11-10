@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -26,7 +27,7 @@ beforeEach(() => {
   api.listPlans.mockResolvedValue({ plans: [], limits })
 })
 afterEach(cleanup)
-it('offers only organizations with staff permission and ignores an unauthorized query selection', async () => {
+it('offers authorized organizations without falling back from an unauthorized link', async () => {
   render(
     <MemoryRouter initialEntries={['/upload?organizationId=student-org']}>
       <ActivityPlanUploadPage />
@@ -36,12 +37,19 @@ it('offers only organizations with staff permission and ignores an unauthorized 
   expect(
     screen.queryByRole('option', { name: 'Student campus' }),
   ).not.toBeInTheDocument()
-  expect(screen.getByLabelText('Organization')).toHaveValue('staff-org')
+  expect(screen.getByLabelText('Organization')).toHaveValue('')
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    'This organization is unavailable',
+  )
+  expect(api.listPlans).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByLabelText('Organization'), {
+    target: { value: 'staff-org' },
+  })
   await waitFor(() => expect(api.listPlans).toHaveBeenCalledWith('staff-org'))
   expect(api.listPlans).not.toHaveBeenCalledWith('student-org')
 })
 it('keeps the selected file and plan name after a failed upload', async () => {
-  api.uploadPlan.mockRejectedValue(new Error('Storage temporarily unavailable'))
+  api.uploadPlan.mockRejectedValue({ status: 503 })
   render(
     <MemoryRouter>
       <ActivityPlanUploadPage />
@@ -67,7 +75,7 @@ it('keeps the selected file and plan name after a failed upload', async () => {
       .closest('form'),
   )
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Storage temporarily unavailable',
+    'Upload storage is temporarily unavailable',
   )
   expect(screen.getByLabelText('Plan name')).toHaveValue('Learning plan')
   expect(screen.getByLabelText('PDF file').files[0]).toBe(file)
@@ -98,4 +106,84 @@ it('does not show a prior organization’s plans while another organization load
   )
   expect(screen.queryByText('Private plan')).not.toBeInTheDocument()
   expect(screen.getByRole('status')).toHaveTextContent('Loading')
+})
+
+it.each([
+  [
+    'unsupported type',
+    () => new File(['text'], 'notes.txt', { type: 'text/plain' }),
+    'Choose a PDF file.',
+  ],
+  [
+    'empty file',
+    () => new File([], 'empty.pdf', { type: 'application/pdf' }),
+    'This PDF is empty.',
+  ],
+  [
+    'over-limit PDF',
+    () =>
+      new File([new Uint8Array(limits.max_bytes + 1)], 'big.pdf', {
+        type: 'application/pdf',
+      }),
+    'This PDF exceeds the upload limit.',
+  ],
+])('rejects %s before upload', async (_label, makeFile, message) => {
+  render(
+    <MemoryRouter>
+      <ActivityPlanUploadPage />
+    </MemoryRouter>,
+  )
+  const input = await screen.findByLabelText('PDF file')
+  await screen.findByText(/up to 10 MiB/)
+  fireEvent.change(input, { target: { files: [makeFile()] } })
+  expect(screen.getByRole('alert')).toHaveTextContent(message)
+  fireEvent.submit(input.form)
+  expect(api.uploadPlan).not.toHaveBeenCalled()
+})
+
+it('starts one scoped upload and drops its late result after an organization change', async () => {
+  learning.listOrganizations.mockResolvedValue([
+    { id: 'staff-org', name: 'Staff campus', role: 'coordinator' },
+    { id: 'other-org', name: 'Other campus', role: 'admin' },
+  ])
+  let complete
+  api.uploadPlan.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve
+      }),
+  )
+  render(
+    <MemoryRouter>
+      <ActivityPlanUploadPage />
+    </MemoryRouter>,
+  )
+  await screen.findByText(/up to 10 MiB/)
+  const file = new File(['%PDF-1.7'], 'activity.pdf', {
+    type: 'application/pdf',
+  })
+  const input = screen.getByLabelText('PDF file')
+  fireEvent.change(screen.getByLabelText('Plan name'), {
+    target: { value: 'Staff plan' },
+  })
+  fireEvent.change(input, { target: { files: [file] } })
+  fireEvent.submit(input.form)
+  fireEvent.submit(input.form)
+  expect(api.uploadPlan).toHaveBeenCalledExactlyOnceWith(
+    'staff-org',
+    'Staff plan',
+    file,
+  )
+  expect(screen.getByRole('status')).toHaveTextContent('Uploading your PDF')
+  fireEvent.change(screen.getByLabelText('Organization'), {
+    target: { value: 'other-org' },
+  })
+  await act(async () =>
+    complete({ id: 'first-plan', organization_id: 'staff-org' }),
+  )
+  expect(screen.getByLabelText('Plan name')).toHaveValue('')
+  expect(screen.queryByText('Selected: activity.pdf')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('link', { name: 'Open uploaded plan' }),
+  ).not.toBeInTheDocument()
 })

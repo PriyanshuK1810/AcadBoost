@@ -1,11 +1,12 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { Link, MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import * as learningApi from '../learningApi'
 import { useWorkspace } from '../hooks/useWorkspace'
@@ -103,6 +104,75 @@ it('lets a coordinator accept a staff invitation', async () => {
     ),
   )
   expect(await screen.findByText(/joined Campus/i)).toBeInTheDocument()
+})
+
+it('keeps the confirmed invitation when the follow-up list refresh fails', async () => {
+  learningApi.listOrganizationInvitations
+    .mockResolvedValueOnce([])
+    .mockRejectedValueOnce(new Error('Temporary outage'))
+  learningApi.createOrganizationInvitation.mockResolvedValue({
+    code: 'issued-code',
+  })
+  render(
+    <MemoryRouter initialEntries={['/app/organizations/org-1']}>
+      <Routes>
+        <Route
+          path="/app/organizations/:organizationId"
+          element={<OrganizationDetailPage />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  )
+  fireEvent.change(await screen.findByLabelText('Staff email'), {
+    target: { value: 'new@example.edu' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Create invitation' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'The change was saved',
+  )
+  expect(screen.getByText('issued-code')).toBeInTheDocument()
+  expect(learningApi.createOrganizationInvitation).toHaveBeenCalledTimes(1)
+})
+
+it('discards a late one-time invitation and its follow-up read after leaving the organization', async () => {
+  const delayed = Promise.withResolvers()
+  learningApi.createOrganizationInvitation.mockReturnValue(delayed.promise)
+  learningApi.getOrganization.mockImplementation(async (id) => ({
+    id,
+    name: `Campus ${id}`,
+    role: 'owner',
+  }))
+  render(
+    <MemoryRouter initialEntries={['/app/organizations/a']}>
+      <Link to="/app/organizations/b">Open B</Link>
+      <Routes>
+        <Route
+          path="/app/organizations/:organizationId"
+          element={<OrganizationDetailPage />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  )
+  fireEvent.change(await screen.findByLabelText('Staff email'), {
+    target: { value: 'disposable@example.test' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Create invitation' }))
+  expect(
+    learningApi.createOrganizationInvitation,
+  ).toHaveBeenCalledExactlyOnceWith(
+    'a',
+    'disposable@example.test',
+    'coordinator',
+  )
+  fireEvent.click(screen.getByRole('link', { name: 'Open B' }))
+  await screen.findByRole('heading', { name: 'Campus b' })
+  await act(async () => delayed.resolve({ code: 'obsolete-invite' }))
+  expect(screen.queryByText('obsolete-invite')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Invitation created/)).not.toBeInTheDocument()
+  expect(learningApi.listOrganizationInvitations.mock.calls).toEqual([
+    ['a'],
+    ['b'],
+  ])
 })
 
 it('lets an owner deactivate a staff member from the member directory', async () => {

@@ -8,8 +8,14 @@ import {
   useNavigate,
 } from 'react-router'
 import { restoreSession, signOut, dashboardPath } from '../../auth/authApi'
+import BrandWordmark from '../../../app/BrandWordmark'
+import { PRODUCT_TAGLINE } from '../../../app/brand'
 import { WorkspaceContext } from '../hooks/useWorkspace'
-import { listOrganizations } from '../learningApi'
+import {
+  useOrganizationSelection,
+  withOrganization,
+} from '../hooks/useOrganizationScope'
+import ForestLandscapeArtwork from './ForestLandscapeArtwork'
 const studentLinks = [
   { to: '/app/student', label: 'Overview', end: true },
   { to: '/app/student/learning', label: 'My assigned learning' },
@@ -32,7 +38,6 @@ export default function WorkspaceShell() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [organizations, setOrganizations] = useState([])
   const triggerRef = useRef(null),
     sidebarRef = useRef(null)
   const [mobile, setMobile] = useState(
@@ -81,26 +86,8 @@ export default function WorkspaceShell() {
   const location = useLocation()
   const navigate = useNavigate()
   const coordinatorView = user?.account_type === 'coordinator'
-  const organizationId = new URLSearchParams(location.search).get(
-    'organizationId',
-  )
-  const organization =
-    organizations.find((item) => item.id === organizationId) ||
-    (organizations.length === 1 ? organizations[0] : null)
-  useEffect(() => {
-    if (!user || user.account_type !== 'coordinator') return
-    let active = true
-    listOrganizations()
-      .then((items) => {
-        if (active) setOrganizations(items)
-      })
-      .catch(() => {
-        if (active) setOrganizations([])
-      })
-    return () => {
-      active = false
-    }
-  }, [user])
+  const scope = useOrganizationSelection(coordinatorView)
+  const { organization, organizations, requestedId, selectOrganization } = scope
   useEffect(() => {
     let active = true
     void (async () => {
@@ -138,9 +125,7 @@ export default function WorkspaceShell() {
     return (
       <main className="workspace-gate">
         <div className="workspace-gate-card">
-          <span className="workspace-logo">
-            Outpost<span>.</span>
-          </span>
+          <BrandWordmark className="workspace-logo" />
           <p>Loading your workspace…</p>
         </div>
       </main>
@@ -149,9 +134,7 @@ export default function WorkspaceShell() {
     return (
       <main className="workspace-gate">
         <div className="workspace-gate-card">
-          <span className="workspace-logo">
-            Outpost<span>.</span>
-          </span>
+          <BrandWordmark className="workspace-logo" />
           <h1>Sign in to continue</h1>
           <p>Your workspace is available after you sign in.</p>
           <Link className="button button-primary" to="/login">
@@ -161,6 +144,8 @@ export default function WorkspaceShell() {
       </main>
     )
   const home = dashboardPath(user.account_type)
+  const scoped = (path) =>
+    coordinatorView ? withOrganization(path, organization?.id) : path
   if (
     location.pathname === '/app' ||
     (location.pathname.startsWith('/app/student') && coordinatorView) ||
@@ -174,6 +159,7 @@ export default function WorkspaceShell() {
         user,
         error,
         signOut: leaveWorkspace,
+        organizationScope: coordinatorView ? { ...scope, managed: true } : null,
       }}
     >
       <div className="workspace-layout">
@@ -187,15 +173,17 @@ export default function WorkspaceShell() {
             if (event.target.closest('a')) setMenuOpen(false)
           }}
         >
+          <ForestLandscapeArtwork variant="sidebar" />
           {mobile && (
             <button className="drawer-close" onClick={() => setMenuOpen(false)}>
               Close navigation
             </button>
           )}
-          <Link className="workspace-brand" to={home}>
-            Outpost<span>.</span>
-            <small>Workspace</small>
-          </Link>
+          <BrandWordmark
+            className="workspace-brand"
+            to={scoped(home)}
+            tagline={PRODUCT_TAGLINE}
+          />
           <div className="workspace-org">
             <span className="workspace-org-mark">
               {organization?.name[0]?.toUpperCase() || 'O'}
@@ -217,7 +205,9 @@ export default function WorkspaceShell() {
             </span>
             <Link
               to={
-                coordinatorView ? '/app/organizations' : '/app/student/learning'
+                coordinatorView
+                  ? scoped('/app/organizations')
+                  : '/app/student/learning'
               }
               aria-label={
                 coordinatorView ? 'Organization context' : 'Assigned learning'
@@ -238,7 +228,7 @@ export default function WorkspaceShell() {
             {(coordinatorView ? coordinatorLinks : studentLinks).map((item) => (
               <NavLink
                 key={item.to}
-                to={item.to}
+                to={scoped(item.to)}
                 end={item.end}
                 className={({ isActive }) =>
                   'workspace-nav-link' + (isActive ? ' is-active' : '')
@@ -261,7 +251,12 @@ export default function WorkspaceShell() {
           />
         )}
         <div className="workspace-main-area" inert={mobile && menuOpen}>
-          <header className="workspace-topbar">
+          <header
+            className={
+              'workspace-topbar' +
+              (organizations.length ? ' has-organization-picker' : '')
+            }
+          >
             <div className="workspace-topbar-left">
               <button
                 className="workspace-menu-button"
@@ -290,8 +285,38 @@ export default function WorkspaceShell() {
                         : 'Account')}
               </span>
             </div>
+            {coordinatorView && organizations.length > 0 && (
+              <label className="workspace-topbar-organization">
+                <span className="sr-only">Organization</span>
+                <select
+                  aria-label="Organization"
+                  value={organization?.id || ''}
+                  title={organization?.name}
+                  onChange={(event) => {
+                    const nextId = event.currentTarget.value
+                    // The current route stays authoritative while an unsaved-work prompt is open.
+                    event.currentTarget.value = organization?.id ?? ''
+                    selectOrganization(nextId)
+                  }}
+                >
+                  <option value="" disabled hidden={!!organization}>
+                    {requestedId !== null && !organization
+                      ? 'Organization unavailable'
+                      : 'Select an organization'}
+                  </option>
+                  {organizations.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="workspace-topbar-actions">
-              <Link to="/app/account" className="workspace-account-link">
+              <Link
+                to={scoped('/app/account')}
+                className="workspace-account-link"
+              >
                 <span className="workspace-avatar">
                   {user.display_name.slice(0, 1).toUpperCase()}
                 </span>

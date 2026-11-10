@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import {
   createOrganizationInvitation,
@@ -14,8 +14,16 @@ import { PageHeading } from '../components/WorkspaceUI'
 
 export default function OrganizationDetailPage() {
   const { organizationId } = useParams()
-  const { user } = useWorkspace()
+  return (
+    <OrganizationDetails key={organizationId} organizationId={organizationId} />
+  )
+}
+
+function OrganizationDetails({ organizationId }) {
+  const { user, organizationScope } = useWorkspace()
   const navigate = useNavigate()
+  const mounted = useRef(false)
+  const pending = useRef(false)
   const [organization, setOrganization] = useState(null)
   const [members, setMembers] = useState([])
   const [invitations, setInvitations] = useState([])
@@ -26,6 +34,13 @@ export default function OrganizationDetailPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -62,27 +77,46 @@ export default function OrganizationDetailPage() {
     organization?.id === organizationId ? organization : null
 
   async function run(action) {
+    if (!visibleOrganization || pending.current) return
+    pending.current = true
     setBusy(true)
     setError('')
     setNotice('')
     try {
       await action()
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'The change could not be saved.',
-      )
+      if (mounted.current) {
+        setError(
+          cause?.status && cause.status < 500
+            ? cause.message
+            : 'The result could not be confirmed. Reload this organization before trying again.',
+        )
+      }
     } finally {
-      setBusy(false)
+      pending.current = false
+      if (mounted.current) setBusy(false)
+    }
+  }
+
+  async function refreshAfterChange(load, update) {
+    try {
+      const rows = await load(organizationId)
+      if (mounted.current) update(rows)
+    } catch {
+      if (mounted.current) {
+        setError(
+          'The change was saved, but the list could not be refreshed. Reload this organization to see the latest data.',
+        )
+      }
     }
   }
 
   function changeMember(member, changes) {
     void run(async () => {
       await updateOrganizationMember(organizationId, member.id, changes)
-      setMembers(await listOrganizationMembers(organizationId))
+      if (!mounted.current) return
       setNotice('Member updated.')
+      await refreshAfterChange(listOrganizationMembers, setMembers)
     })
   }
 
@@ -95,6 +129,8 @@ export default function OrganizationDetailPage() {
       return
     void run(async () => {
       await transferOrganizationOwnership(organizationId, member.id)
+      if (!mounted.current) return
+      organizationScope?.retry()
       navigate('/app/organizations')
     })
   }
@@ -108,12 +144,13 @@ export default function OrganizationDetailPage() {
         email.trim(),
         role,
       )
+      if (!mounted.current) return
       setNewCode(issued.code)
-      setInvitations(await listOrganizationInvitations(organizationId))
       setEmail('')
       setNotice(
         'Invitation created. Share the code with the recipient now; it will not be shown again.',
       )
+      await refreshAfterChange(listOrganizationInvitations, setInvitations)
     })
   }
 
@@ -121,8 +158,9 @@ export default function OrganizationDetailPage() {
     setNewCode('')
     void run(async () => {
       await revokeOrganizationInvitation(organizationId, invitation.id)
-      setInvitations(await listOrganizationInvitations(organizationId))
+      if (!mounted.current) return
       setNotice('Invitation revoked.')
+      await refreshAfterChange(listOrganizationInvitations, setInvitations)
     })
   }
 
@@ -135,7 +173,7 @@ export default function OrganizationDetailPage() {
         action={
           <Link
             className="workspace-button workspace-button-outline"
-            to="/app/organizations"
+            to={'/app/organizations?' + new URLSearchParams({ organizationId })}
           >
             Back to organizations
           </Link>

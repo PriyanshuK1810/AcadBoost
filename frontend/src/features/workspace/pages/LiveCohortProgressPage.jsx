@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useLiveResource } from '../hooks/useLiveResource'
 import LiveResourceState from '../components/LiveResourceState'
-import { Link, useParams } from 'react-router'
+import { Link, Navigate, useLocation, useParams } from 'react-router'
 import {
   EmptyState,
   MetricCard,
@@ -9,10 +9,93 @@ import {
   ProgressBar,
 } from '../components/WorkspaceUI'
 import CohortSchedule from '../components/CohortSchedule'
-import { getCohortProgress } from '../learningApi'
+import { getCohortProgress, listCohorts } from '../learningApi'
+import {
+  learningRoles,
+  useOrganizationScope,
+  withOrganization,
+} from '../hooks/useOrganizationScope'
 export default function LiveCohortProgressPage() {
   const { cohortId } = useParams()
-  const loader = useCallback(() => getCohortProgress(cohortId), [cohortId])
+  const scope = useOrganizationScope()
+  if (!scope.managed && scope.requestedId === null) {
+    return <CohortProgress key={cohortId} cohortId={cohortId} />
+  }
+  if (scope.loading || scope.error) return <LiveResourceState {...scope} />
+  return (
+    <CohortAccess
+      key={JSON.stringify([cohortId, scope.requestedId])}
+      cohortId={cohortId}
+      scope={scope}
+    />
+  )
+}
+
+function CohortAccess({ cohortId, scope }) {
+  const location = useLocation()
+  const { organization, organizations, requestedId } = scope
+  const candidates =
+    requestedId === null ? organizations : organization ? [organization] : []
+  const candidateIds = JSON.stringify(
+    candidates
+      .filter(({ role }) => learningRoles.includes(role))
+      .map(({ id }) => id),
+  )
+  const verify = useCallback(async () => {
+    let firstError
+    for (const id of JSON.parse(candidateIds)) {
+      try {
+        const cohorts = await listCohorts(id)
+        if (
+          cohorts.some(
+            (item) => item.id === cohortId && item.organization_id === id,
+          )
+        )
+          return id
+      } catch (error) {
+        firstError ??= error
+      }
+    }
+    if (firstError) throw firstError
+    return null
+  }, [candidateIds, cohortId])
+  const membership = useLiveResource(verify)
+  if (membership.loading || membership.error)
+    return <LiveResourceState {...membership} />
+  if (!membership.data) {
+    return (
+      <EmptyState
+        title="Cohort unavailable"
+        description="This cohort is unavailable in the selected organization."
+        actionLabel="Back to live learning"
+        actionTo={withOrganization(
+          '/app/coordinator/learning',
+          organization?.id,
+        )}
+      />
+    )
+  }
+  if (requestedId === null) {
+    return (
+      <Navigate
+        replace
+        to={withOrganization(
+          location.pathname + location.search + location.hash,
+          membership.data,
+        )}
+      />
+    )
+  }
+  return <CohortProgress cohortId={cohortId} organization={organization} />
+}
+
+function CohortProgress({ cohortId, organization }) {
+  const loader = useCallback(async () => {
+    const report = await getCohortProgress(cohortId)
+    if (report.cohort_id && report.cohort_id !== cohortId)
+      throw new Error('This cohort report could not be confirmed.')
+    return report
+  }, [cohortId])
   const resource = useLiveResource(loader)
   const report = resource.data
   return (
@@ -22,11 +105,14 @@ export default function LiveCohortProgressPage() {
         title={report?.cohort_name || 'Cohort progress'}
         description={
           report
-            ? `Real progress for ${report.roadmap_name}. Refresh to see students' latest updates.`
+            ? `Real progress for ${report.roadmap_name}${organization ? ` at ${organization.name}` : ''}. Refresh to see students' latest updates.`
             : 'Review real student topic completion.'
         }
         action={
-          <Link className="workspace-button" to="/app/coordinator/learning">
+          <Link
+            className="workspace-button"
+            to={withOrganization('/app/coordinator/learning', organization?.id)}
+          >
             Back to setup
           </Link>
         }

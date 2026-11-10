@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import * as api from '../learningApi'
@@ -114,8 +121,52 @@ it('offers roadmap preparation as the sole primary empty-state action without pu
   show(CoordinatorDashboardPage)
   expect(
     await screen.findByRole('link', { name: 'Prepare a roadmap' }),
-  ).toHaveAttribute('href', '/app/coordinator/roadmaps')
+  ).toHaveAttribute('href', '/app/coordinator/roadmaps?organizationId=o1')
   expect(
     screen.queryByRole('link', { name: 'Manage live learning' }),
   ).not.toBeInTheDocument()
+})
+
+it('loads the requested organization and ignores an obsolete report when B fails', async () => {
+  const delayed = Promise.withResolvers()
+  api.listOrganizations.mockResolvedValue([
+    { id: 'o2', name: 'Other campus', role: 'owner' },
+    { id: 'o1', name: 'Campus', role: 'owner' },
+  ])
+  api.listCohorts
+    .mockResolvedValueOnce([
+      { id: 'c1', name: 'Actual lab', organization_id: 'o1' },
+    ])
+    .mockRejectedValueOnce(new Error('B unavailable'))
+    .mockResolvedValueOnce([
+      { id: 'c2', name: 'New lab', organization_id: 'o2' },
+    ])
+  api.getCohortProgress
+    .mockReturnValueOnce(delayed.promise)
+    .mockResolvedValueOnce({
+      ...report,
+      cohort_id: 'c2',
+      cohort_name: 'New lab',
+    })
+  render(
+    <MemoryRouter initialEntries={['/app/coordinator?organizationId=o1']}>
+      <CoordinatorDashboardPage />
+    </MemoryRouter>,
+  )
+  await waitFor(() =>
+    expect(api.getCohortProgress).toHaveBeenCalledExactlyOnceWith('c1'),
+  )
+  expect(api.listCohorts).toHaveBeenCalledExactlyOnceWith('o1')
+  fireEvent.change(screen.getByLabelText('Organization'), {
+    target: { value: 'o2' },
+  })
+  expect(await screen.findByRole('alert')).toHaveTextContent('B unavailable')
+  await act(async () => delayed.resolve(report))
+  expect(screen.queryByText('Actual lab')).not.toBeInTheDocument()
+  expect(screen.queryByText('No active cohorts')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+  expect(
+    await screen.findByRole('heading', { name: 'New lab' }),
+  ).toBeInTheDocument()
+  expect(api.getCohortProgress).toHaveBeenLastCalledWith('c2')
 })

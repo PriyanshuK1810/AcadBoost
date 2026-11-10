@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { useWorkspace } from '../hooks/useWorkspace'
+import { withOrganization } from '../hooks/useOrganizationScope'
 import { acceptOrganizationInvitation, listOrganizations } from '../learningApi'
 import { EmptyState, PageHeading } from '../components/WorkspaceUI'
 export default function OrganizationsPage() {
-  const { user } = useWorkspace()
+  const { user, organizationScope } = useWorkspace()
+  const usesWorkspaceMemberships = Boolean(organizationScope)
   const [organizations, setOrganizations] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -12,6 +14,7 @@ export default function OrganizationsPage() {
   const [inviteBusy, setInviteBusy] = useState(false)
   const [notice, setNotice] = useState('')
   useEffect(() => {
+    if (usesWorkspaceMemberships) return
     let active = true
     void listOrganizations()
       .then((items) => {
@@ -31,7 +34,10 @@ export default function OrganizationsPage() {
     return () => {
       active = false
     }
-  }, [])
+  }, [usesWorkspaceMemberships])
+  const directory = organizationScope?.organizations ?? organizations
+  const directoryLoading = organizationScope?.loading ?? loading
+  const directoryError = error || organizationScope?.error
   const destination =
     user.account_type === 'coordinator'
       ? '/app/coordinator/learning'
@@ -42,7 +48,8 @@ export default function OrganizationsPage() {
     setError('')
     void acceptOrganizationInvitation(inviteCode.trim())
       .then(async (accepted) => {
-        setOrganizations(await listOrganizations())
+        if (organizationScope) organizationScope.retry()
+        else setOrganizations(await listOrganizations())
         setInviteCode('')
         setNotice(`Joined ${accepted.organization_name} as ${accepted.role}.`)
       })
@@ -62,7 +69,13 @@ export default function OrganizationsPage() {
         title="Your organizations"
         description="Organizations appear here when you create one or join a coordinator's cohort."
         action={
-          <Link className="workspace-button" to={destination}>
+          <Link
+            className="workspace-button"
+            to={withOrganization(
+              destination,
+              organizationScope?.organization?.id,
+            )}
+          >
             {user.account_type === 'coordinator'
               ? 'Create organization'
               : 'Join a cohort'}{' '}
@@ -70,10 +83,10 @@ export default function OrganizationsPage() {
           </Link>
         }
       />
-      {loading && <p role="status">Loading organizations…</p>}
-      {error && (
+      {directoryLoading && <p role="status">Loading organizations…</p>}
+      {directoryError && (
         <p className="form-error" role="alert">
-          {error}
+          {directoryError}
         </p>
       )}
       {notice && (
@@ -103,7 +116,7 @@ export default function OrganizationsPage() {
           </form>
         </section>
       )}
-      {!loading && organizations.length === 0 && (
+      {!directoryLoading && !directoryError && directory.length === 0 && (
         <EmptyState
           title="No organization yet"
           description={
@@ -120,7 +133,7 @@ export default function OrganizationsPage() {
         />
       )}
       <div className="learning-assignments">
-        {organizations.map((organization) => (
+        {directory.map((organization) => (
           <article
             className="workspace-card workspace-entity-card"
             key={organization.id}
@@ -146,7 +159,13 @@ export default function OrganizationsPage() {
               )}
               {organization.role === 'owner' ||
               organization.role === 'student' ? (
-                <Link className="workspace-text-link" to={destination}>
+                <Link
+                  className="workspace-text-link"
+                  to={withOrganization(
+                    destination,
+                    organizationScope && organization.id,
+                  )}
+                >
                   Open learning workspace →
                 </Link>
               ) : (

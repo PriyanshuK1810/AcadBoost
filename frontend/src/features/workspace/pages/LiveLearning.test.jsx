@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -82,7 +83,7 @@ beforeEach(() => {
     next_cursor: null,
   })
 })
-it('lets a coordinator create an organization, roadmap, and cohort', async () => {
+it('lets staff create an organization, open its roadmaps, and assign an existing published version to a cohort', async () => {
   const org = { id: 'org-1', name: 'Campus', role: 'owner' }
   const roadmap = {
     id: 'roadmap-1',
@@ -104,11 +105,9 @@ it('lets a coordinator create an organization, roadmap, and cohort', async () =>
     student_count: 0,
   }
   vi.mocked(learningApi.createOrganization).mockResolvedValue(org)
-  vi.mocked(learningApi.createRoadmap).mockResolvedValue(roadmap)
-  vi.mocked(learningApi.publishRoadmapVersion).mockResolvedValue({
-    ...roadmap,
-    status: 'published',
-  })
+  vi.mocked(learningApi.listRoadmaps).mockResolvedValue([
+    { ...roadmap, status: 'published' },
+  ])
   vi.mocked(learningApi.createCohort).mockResolvedValue(cohort)
   render(
     <MemoryRouter>
@@ -122,34 +121,13 @@ it('lets a coordinator create an organization, roadmap, and cohort', async () =>
   await waitFor(() =>
     expect(learningApi.createOrganization).toHaveBeenCalledWith('Campus'),
   )
-  fireEvent.change(await screen.findByLabelText('Roadmap name'), {
-    target: { value: roadmap.name },
-  })
-  fireEvent.change(
-    screen.getByRole('textbox', { name: /Topics, one per line/i }),
-    { target: { value: 'Set goals' } },
-  )
-  fireEvent.click(screen.getByRole('button', { name: 'Create roadmap draft' }))
-  await waitFor(() =>
-    expect(learningApi.createRoadmap).toHaveBeenCalledWith(org.id, {
-      name: roadmap.name,
-      description: '',
-      topics: [{ title: 'Set goals', description: '' }],
-    }),
-  )
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Review draft for publication' }),
-  )
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Publish reviewed draft' }),
-  )
-  await waitFor(() =>
-    expect(learningApi.publishRoadmapVersion).toHaveBeenCalledWith(
-      org.id,
-      roadmap.id,
-      roadmap.version_id,
-    ),
-  )
+  expect(
+    await screen.findByRole('link', { name: 'Browse organization roadmaps' }),
+  ).toHaveAttribute('href', '/app/coordinator/roadmaps?organizationId=org-1')
+  expect(
+    screen.queryByRole('button', { name: /Publish reviewed draft/ }),
+  ).not.toBeInTheDocument()
+  expect(learningApi.publishRoadmapVersion).not.toHaveBeenCalled()
   fireEvent.change(await screen.findByLabelText('Cohort name'), {
     target: { value: cohort.name },
   })
@@ -162,7 +140,70 @@ it('lets a coordinator create an organization, roadmap, and cohort', async () =>
   )
   expect(
     screen.getByRole('link', { name: /view live progress/i }),
-  ).toHaveAttribute('href', '/app/coordinator/learning/cohort-1')
+  ).toHaveAttribute(
+    'href',
+    '/app/coordinator/learning/cohort-1?organizationId=org-1',
+  )
+})
+
+it('isolates failed and delayed learning reads and late join codes across organizations', async () => {
+  const a = { id: 'a', name: 'Campus A', role: 'owner' }
+  const b = { id: 'b', name: 'Campus B', role: 'owner' }
+  const cohort = {
+    id: 'a-cohort',
+    name: 'Cohort A',
+    organization_id: a.id,
+    join_code_status: 'active',
+  }
+  const roadmap = {
+    version_id: 'a-version',
+    name: 'Roadmap A',
+    organization_id: a.id,
+    status: 'published',
+  }
+  const late = Promise.withResolvers()
+  const secondA = Promise.withResolvers()
+  learningApi.listOrganizations.mockResolvedValue([a, b])
+  learningApi.listRoadmaps.mockImplementation(async (id) =>
+    id === a.id ? [roadmap] : [],
+  )
+  learningApi.listCohorts
+    .mockResolvedValueOnce([cohort])
+    .mockRejectedValueOnce(new Error('Simulated B outage'))
+    .mockImplementationOnce(() => secondA.promise)
+    .mockResolvedValue([])
+  learningApi.rotateCohortJoinCode.mockReturnValue(late.promise)
+  render(
+    <MemoryRouter
+      initialEntries={['/app/coordinator/learning?organizationId=a']}
+    >
+      <CoordinatorLearningPage />
+    </MemoryRouter>,
+  )
+  await screen.findByText('Cohort A')
+  fireEvent.click(screen.getByRole('button', { name: 'Rotate join code' }))
+  const switchTo = (id) =>
+    fireEvent.change(screen.getByLabelText('Working in'), {
+      target: { value: id },
+    })
+  switchTo(b.id)
+  expect(screen.queryByText('Cohort A')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Roadmap')).not.toBeInTheDocument()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Campus B')
+  expect(screen.queryByText('No cohorts yet')).not.toBeInTheDocument()
+  await act(async () =>
+    late.resolve({ ...cohort, invite_code: 'obsolete-code' }),
+  )
+  expect(screen.queryByText('obsolete-code')).not.toBeInTheDocument()
+  switchTo(a.id)
+  await waitFor(() => expect(learningApi.listCohorts).toHaveBeenCalledTimes(3))
+  switchTo(b.id)
+  expect(await screen.findByText('No cohorts yet')).toBeInTheDocument()
+  await act(async () => secondA.resolve([cohort]))
+  expect(screen.queryByText('Cohort A')).not.toBeInTheDocument()
+  expect(learningApi.rotateCohortJoinCode).toHaveBeenCalledExactlyOnceWith(
+    cohort.id,
+  )
 })
 it('lets a student join and persist topic completion', async () => {
   const assignment = {
@@ -252,6 +293,35 @@ it('shows zero-progress students in the coordinator report', async () => {
   expect(screen.getByText('0 / 1 topics')).toBeInTheDocument()
   expect(learningApi.getCohortProgress).toHaveBeenCalledWith('cohort-1')
 })
+it('does not request progress for a cohort outside the selected organization', async () => {
+  learningApi.listOrganizations.mockResolvedValue([
+    { id: 'org-a', name: 'Campus A', role: 'owner' },
+    { id: 'org-b', name: 'Campus B', role: 'owner' },
+  ])
+  learningApi.listCohorts.mockResolvedValue([
+    { id: 'cohort-1', organization_id: 'org-a' },
+  ])
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/app/coordinator/learning/cohort-1?organizationId=org-b',
+      ]}
+    >
+      <Routes>
+        <Route
+          path="/app/coordinator/learning/:cohortId"
+          element={<LiveCohortProgressPage />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  )
+  expect(
+    await screen.findByRole('heading', { name: 'Cohort unavailable' }),
+  ).toBeInTheDocument()
+  expect(learningApi.listCohorts).toHaveBeenCalledWith('org-b')
+  expect(learningApi.getCohortProgress).not.toHaveBeenCalled()
+})
+
 it('shows a useful error when a student enters an invalid join code', async () => {
   vi.mocked(learningApi.getMyLearning).mockResolvedValue([])
   vi.mocked(learningApi.joinCohort).mockRejectedValue(
