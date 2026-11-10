@@ -1,10 +1,10 @@
+import BrandWordmark from '../../app/BrandWordmark'
+
 export default function AuthLayout({ eyebrow, title, intro, children }) {
   return (
     <main className="auth-page">
       <header className="auth-header page-container">
-        <a className="wordmark" href="/" aria-label="Outpost home">
-          Outpost<span aria-hidden="true">.</span>
-        </a>
+        <BrandWordmark className="wordmark" href="/" />
         <a className="auth-home-link" href="/login">
           Back to sign in ↗
         </a>
@@ -15,7 +15,7 @@ export default function AuthLayout({ eyebrow, title, intro, children }) {
           <h2>Keep your next step within reach.</h2>
           <p>
             One account connects your learning journey and progress across
-            Outpost.
+            Acadboost.
           </p>
           <div className="auth-story-footer">
             <span className="auth-story-marker">01</span>

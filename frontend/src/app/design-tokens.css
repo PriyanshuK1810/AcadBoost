@@ -1,0 +1,156 @@
+:root {
+  /* Acadboost brand and page surfaces */
+  --color-forest: #174f40;
+  --color-forest-deep: #103d32;
+  --color-forest-accent: #26705a;
+  --color-sage: #eef3ed;
+  --color-sage-accent: #d8eeaa;
+  --color-canvas: #fafbf8;
+  --color-workspace-canvas: #f3f6f1;
+  --color-surface: #fff;
+  --color-text-primary: #203c34;
+  --color-text-secondary: #50635b;
+  --color-text-muted: #61746a;
+  --color-border: #dce5dc;
+  --color-focus: #398369;
+  --color-primary-action: #1d5944;
+  --color-primary-action-hover: #164c3a;
+  --color-primary-action-outline: #1b5943;
+  --color-primary-action-outline-hover: #f0f6ed;
+  --color-danger: #a33b35;
+  --color-danger-surface: #fff4f2;
+  --color-success: #286b3f;
+  --color-success-surface: #eff8ef;
+  --color-success-border: #c7dec8;
+  --color-success-text: #245c35;
+  --color-error-border: #eed0cb;
+  --color-error-text: #963b30;
+  --color-dialog-backdrop: rgb(16 44 38 / 65%);
+  --control-disabled-opacity: 0.58;
+
+  /* Workspace compatibility colors retained from the verified shell */
+  --workspace-ink: #163a31;
+  --workspace-muted: #687a72;
+  --workspace-line: #e0e9e2;
+  --workspace-forest: #143f34;
+  --workspace-forest-raised: #265747;
+  --workspace-forest-border: #3c6b56;
+  --workspace-forest-divider: #376552;
+  --workspace-forest-text: #194735;
+  --workspace-forest-control: #174737;
+  --workspace-forest-action: #173f34;
+  --workspace-forest-tab: #2b5649;
+  --workspace-sage-active: #dcebc4;
+  --workspace-sage-strong: #d9ecb6;
+  --workspace-sage-brand: #c9e9a0;
+  --workspace-sage-soft: #f0f6ed;
+  --workspace-text-on-forest: #d8e7dc;
+  --workspace-text-on-sage: #21513b;
+  --workspace-canvas-legacy: #f6f8f4;
+  --workspace-surface-soft: #fcfdfb;
+
+  /* Lifecycle states: text, fill, and border stay paired */
+  --status-draft-text: #263b33;
+  --status-draft-fill: #eef1f2;
+  --status-draft-border: #aeb9bd;
+  --status-review-text: #62420a;
+  --status-review-fill: #fff1d5;
+  --status-review-border: #d7b76f;
+  --status-published-text: #123d2c;
+  --status-published-fill: #e5f0dc;
+  --status-published-border: #a7c78c;
+  --status-archived-text: #34443d;
+  --status-archived-fill: #edf0ef;
+  --status-archived-border: #b4bfbb;
+  --status-success: #286b3f;
+  --status-warning: #805718;
+  --status-danger: #8d302b;
+  --status-neutral: #4b5a53;
+
+  /* Additional named colors used by shared workspace components */
+  --color-sage-selection-text: #194735;
+  --color-focus-strong: #64894a;
+  --color-form-border: #bbcdbf;
+  --color-outline-border: #c5d8c4;
+  --color-outline-active: #b8cdb8;
+  --color-outline-selected: #91c744;
+  --color-outline-selected-fill: #edf5e7;
+
+  /* Typography */
+  --font-family-sans:
+    'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-size-body: 1rem;
+  --font-size-small: 0.875rem;
+  --font-size-meta: 0.75rem;
+  --line-height-body: 1.6;
+  --line-height-heading: 1.2;
+  --page-gutter: clamp(1rem, 3vw, 2rem);
+
+  /* Spacing follows a 4px base and an 8px primary rhythm */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Shared component geometry */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 18px;
+  --radius-dialog: 16px;
+  --radius-pill: 999px;
+  --border-width-default: 1px;
+  --shadow-card: 0 8px 24px rgb(21 56 45 / 7%);
+  --shadow-workspace-card: 0 2px 8px #24463806;
+  --shadow-floating: 0 14px 34px rgb(11 47 37 / 19%);
+  --shadow-dialog: 0 24px 64px rgb(9 44 34 / 50%);
+  --shadow-focus: 0 0 0 3px rgb(57 131 105 / 28%);
+
+  /* Short, explicit motion presets for shared component feedback */
+  --motion-fast-duration: 140ms;
+  --motion-standard-duration: 220ms;
+  --motion-deliberate-duration: 320ms;
+  --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-easing-enter: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Restrained glass surfaces are reserved for navigation and context bars */
+  --glass-sidebar: rgb(20 63 52 / 96%);
+  --glass-toolbar: rgb(255 255 255 / 86%);
+  --glass-border: rgb(255 255 255 / 78%);
+  --glass-blur: 14px;
+  --glass-sidebar-border: rgb(225 242 230 / 22%);
+  --glass-toolbar-shadow: 0 8px 22px rgb(22 58 49 / 8%);
+  --glass-nav-hover: rgb(217 235 199 / 13%);
+  --glass-nav-hover-glow: 0 0 18px rgb(193 226 159 / 15%);
+  --glass-nav-active-border: rgb(217 235 199 / 68%);
+  --glass-row-shadow: 0 8px 18px rgb(18 65 42 / 13%);
+
+  --content-width: 1160px;
+
+  /* Existing public-page aliases remain available during gradual migration */
+  --ink: var(--color-text-primary);
+  --forest: var(--color-forest);
+  --forest-deep: var(--color-forest-deep);
+  --leaf: var(--color-forest-accent);
+  --lime: var(--color-sage-accent);
+  --sage: var(--color-sage);
+  --paper: var(--color-canvas);
+  --white: var(--color-surface);
+  --body: var(--color-text-secondary);
+  --muted: var(--color-text-muted);
+  --line: var(--color-border);
+
+  font-family: var(--font-family-sans);
+  font-weight: 400;
+  line-height: var(--line-height-body);
+  color: var(--color-text-primary);
+  background: var(--color-canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

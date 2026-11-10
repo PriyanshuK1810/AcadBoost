@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
+import BrandWordmark from '../../app/BrandWordmark'
+import { PRODUCT_BRAND } from '../../app/brand'
 import { ApiRequestError } from '../../shared/api/client'
 import {
   dashboardPath,
@@ -80,9 +82,7 @@ export default function PasswordAuthPage({ mode }) {
   return (
     <main className="auth-page">
       <header className="auth-header page-container">
-        <a className="wordmark" href="/" aria-label="Outpost home">
-          Outpost<span aria-hidden="true">.</span>
-        </a>
+        <BrandWordmark className="wordmark" href="/" />
         <a className="auth-home-link" href="/">
           Back to homepage <span aria-hidden="true">↗</span>
         </a>
@@ -94,7 +94,7 @@ export default function PasswordAuthPage({ mode }) {
           </p>
           <h1>A clearer path starts here.</h1>
           <p>
-            Outpost brings learning, practice, and progress together so every
+            {PRODUCT_BRAND} brings learning, practice, and progress together so every
             student can move forward with confidence.
           </p>
           <div className="auth-story-footer">
@@ -106,14 +106,14 @@ export default function PasswordAuthPage({ mode }) {
         </aside>
         <section className="auth-card" aria-labelledby="auth-title">
           <p className="eyebrow">
-            {isRegistration ? 'Join Outpost' : 'Welcome back'}
+            {isRegistration ? `Join ${PRODUCT_BRAND}` : 'Welcome back'}
           </p>
           <h2 id="auth-title">
             {isRegistration ? 'Create your account' : 'Sign in'}
           </h2>
           <p className="auth-intro">
             {isRegistration
-              ? 'Choose your account type and start your Outpost journey.'
+              ? `Choose your account type and start your ${PRODUCT_BRAND} journey.`
               : 'Pick up where your learning journey left off.'}
           </p>
           {registered && (
@@ -258,13 +258,15 @@ export default function PasswordAuthPage({ mode }) {
             </div>
           )}
           <p className="auth-switch">
-            {isRegistration ? 'Already have an account?' : 'New to Outpost?'}{' '}
+            {isRegistration
+              ? 'Already have an account?'
+              : `New to ${PRODUCT_BRAND}?`}{' '}
             <a href={isRegistration ? '/login' : '/register'}>
               {isRegistration ? 'Sign in' : 'Create an account'}
             </a>
           </p>
           <p className="auth-footnote">
-            Your account is protected by Outpost authentication.
+            Your account is protected by {PRODUCT_BRAND} authentication.
           </p>
         </section>
       </div>

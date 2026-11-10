@@ -1,10 +1,11 @@
 import AuthLayout from './AuthLayout'
+import { PRODUCT_BRAND } from '../../app/brand'
 export default function GoogleLoginPage() {
   return (
     <AuthLayout
       eyebrow="Google sign in"
       title="Continue with Google"
-      intro="This sign-in method needs an OAuth client configured for this Outpost installation."
+      intro={`This sign-in method needs an OAuth client configured for this ${PRODUCT_BRAND} installation.`}
     >
       <div className="auth-method-note">
         <h3>Setup in progress</h3>

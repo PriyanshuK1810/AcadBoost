@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PRODUCT_BRAND } from '../../app/brand'
 import AuthLayout from './AuthLayout'
 import { dashboardPath, requestPhoneCode, verifyPhoneCode } from './authApi'
 import { useNavigate } from 'react-router'
@@ -35,7 +36,7 @@ export default function PhoneLoginPage() {
     <AuthLayout
       eyebrow="Another way to sign in"
       title="Use your phone number"
-      intro="Receive a one-time code to access your Outpost account."
+      intro={`Receive a one-time code to access your ${PRODUCT_BRAND} account.`}
     >
       {error && (
         <p className="form-error" role="alert">

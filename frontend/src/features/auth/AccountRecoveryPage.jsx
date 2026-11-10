@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router'
+import { PRODUCT_BRAND } from '../../app/brand'
 import AuthLayout from './AuthLayout'
 import {
   confirmEmailVerification,
@@ -29,7 +30,7 @@ export default function AccountRecoveryPage({ mode }) {
     verify: [
       'Confirm your email',
       'Verify your address',
-      'Use the link from your Outpost verification email.',
+      `Use the link from your ${PRODUCT_BRAND} verification email.`,
     ],
   }[mode]
   async function submit(event) {

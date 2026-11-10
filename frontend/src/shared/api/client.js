@@ -1,3 +1,5 @@
+import { PRODUCT_BRAND } from '../../app/brand'
+
 /** One API transport for every feature. The access token stays in memory. */
 export class ApiRequestError extends Error {
   status
@@ -40,7 +42,7 @@ export async function apiRequest(path, options = {}) {
     })
   } catch {
     throw new Error(
-      'Unable to reach Outpost. Check that the API is running and try again.',
+      `Unable to reach ${PRODUCT_BRAND}. Check that the API is running and try again.`,
     )
   }
   if (!response.ok) {

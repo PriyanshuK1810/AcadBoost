@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import BrandWordmark from '../../app/BrandWordmark'
+import { PRODUCT_BRAND } from '../../app/brand'
 import { restoreSession } from '../auth/authApi'
 import {
   getReviewOverview,
@@ -99,7 +101,7 @@ export default function ReviewPage({ view }) {
     }
   }
   const title = {
-    walkthrough: 'See how Outpost works',
+    walkthrough: `See how ${PRODUCT_BRAND} works`,
     student: 'Your learning journey',
     coordinator: 'A clearer view of the cohort',
     status: 'What is built today',
@@ -111,9 +113,7 @@ export default function ReviewPage({ view }) {
       </a>
       <header className="review-header">
         <div className="page-container review-header-inner">
-          <a className="wordmark" href="/" aria-label="Outpost home">
-            Outpost<span aria-hidden="true">.</span>
-          </a>
+          <BrandWordmark className="wordmark" href="/" />
           <nav className="review-nav" aria-label="Review pages">
             <a
               aria-current={view === 'walkthrough' ? 'page' : undefined}
@@ -144,7 +144,7 @@ export default function ReviewPage({ view }) {
       </header>
       <main id="review-main" className="page-container review-main">
         <div className="review-heading">
-          <p className="eyebrow">Outpost review journey</p>
+          <p className="eyebrow">{PRODUCT_BRAND} review journey</p>
           <h1>{title}</h1>
           <p>
             {view === 'walkthrough'
@@ -224,7 +224,7 @@ export default function ReviewPage({ view }) {
       </main>
       <footer className="review-footer">
         <div className="page-container">
-          <span>Outpost review scenario</span>
+          <span>{PRODUCT_BRAND} review scenario</span>
           <a href="/">Back to homepage ↑</a>
         </div>
       </footer>

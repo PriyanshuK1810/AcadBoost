@@ -1,31 +1,3 @@
-:root {
-  font-family:
-    'Segoe UI',
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    sans-serif;
-  font-weight: 400;
-  line-height: 1.6;
-  color: var(--ink);
-  background: var(--paper);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  --ink: #203c34;
-  --forest: #174f40;
-  --forest-deep: #103d32;
-  --leaf: #26705a;
-  --lime: #d8eeaa;
-  --sage: #eef3ed;
-  --paper: #fafbf8;
-  --white: #fff;
-  --body: #50635b;
-  --muted: #61746a;
-  --line: #dce5dc;
-  --content-width: 1160px;
-}
 * {
   box-sizing: border-box;
 }
@@ -40,8 +12,35 @@ body {
 }
 button,
 input,
+select,
+textarea,
 a {
   font: inherit;
+}
+:where(button, .button, .workspace-button) {
+  -webkit-tap-highlight-color: transparent;
+  transition-property:
+    color, background-color, border-color, box-shadow, transform;
+  transition-duration: var(--motion-fast-duration);
+  transition-timing-function: var(--motion-easing-standard);
+}
+button:active:not(:disabled),
+.button:active:not(:disabled),
+.workspace-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+button:disabled,
+.button:disabled,
+.workspace-button:disabled {
+  cursor: not-allowed;
+  opacity: var(--control-disabled-opacity);
+}
+.button[aria-busy='true'],
+.workspace-button[aria-busy='true'] {
+  cursor: progress;
+}
+:where(input:not([type='checkbox']):not([type='radio']), select, textarea):focus-visible {
+  box-shadow: var(--shadow-focus);
 }
 a {
   color: inherit;
@@ -53,8 +52,11 @@ input {
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
-  outline: 3px solid #398369;
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--color-focus);
   outline-offset: 4px;
 }
 h1,
@@ -72,9 +74,29 @@ h3 {
 p {
   overflow-wrap: anywhere;
 }
+.interactive-card {
+  transition:
+    border-color var(--motion-fast-duration) var(--motion-easing-standard),
+    box-shadow var(--motion-fast-duration) var(--motion-easing-standard),
+    transform var(--motion-fast-duration) var(--motion-easing-standard);
+}
+.interactive-card:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+.interactive-card:active {
+  transform: translateY(1px);
+}
+@media (hover: hover) and (pointer: fine) {
+  .interactive-card:hover {
+    border-color: var(--color-forest-accent);
+    box-shadow: var(--shadow-card);
+    transform: translateY(-2px);
+  }
+}
 ::selection {
-  color: var(--forest-deep);
-  background: var(--lime);
+  color: var(--color-forest-deep);
+  background: var(--color-sage-accent);
 }
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -84,5 +106,16 @@ p {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  .interactive-card:hover,
+  .interactive-card:active,
+  .workspace-nav-link:hover,
+  .roadmap-version-choice:hover {
+    transform: none !important;
+  }
+  button:active:not(:disabled),
+  .button:active:not(:disabled),
+  .workspace-button:active:not(:disabled) {
+    transform: none !important;
   }
 }
