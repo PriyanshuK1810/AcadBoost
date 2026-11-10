@@ -5,6 +5,7 @@ import {
   Route,
   RouterProvider,
 } from 'react-router'
+import { PRODUCT_BRAND } from './brand'
 import PasswordAuthPage from '../features/auth/PasswordAuthPage'
 import AccountRecoveryPage from '../features/auth/AccountRecoveryPage'
 import PhoneLoginPage from '../features/auth/PhoneLoginPage'
@@ -31,9 +32,9 @@ import AtRiskPage from '../features/workspace/pages/AtRiskPage'
 import CoordinatorLearningPage from '../features/workspace/pages/CoordinatorLearningPage'
 import StudentLearningPage from '../features/workspace/pages/StudentLearningPage'
 import LiveCohortProgressPage from '../features/workspace/pages/LiveCohortProgressPage'
-import MarketingPage from '../pages/marketing/MarketingPage'
 import './workspace.css'
 import '../styles/public-pages.css'
+import MarketingPage from '../pages/marketing/MarketingPage'
 function NotFoundPage() {
   return (
     <main className="page-container not-found-page">
@@ -41,7 +42,7 @@ function NotFoundPage() {
       <h1>We couldn’t find that page.</h1>
       <p>Check the address or return to the homepage.</p>
       <a className="button button-primary" href="/">
-        Back to Outpost
+        Back to {PRODUCT_BRAND}
       </a>
     </main>
   )

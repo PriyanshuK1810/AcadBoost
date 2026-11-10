@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +16,12 @@ afterEach(() => {
 describe('Outpost landing page', () => {
   it('introduces the learning-to-career pathway and its main sections', () => {
     render(<App />)
+    expect(
+      within(screen.getByRole('banner')).getByRole('link', {
+        name: 'Acadboost home',
+      }),
+    ).toHaveAttribute('href', '#home')
+    expect(screen.queryByText(/Outpost helps/i)).not.toBeInTheDocument()
     expect(
       screen.getByRole('heading', {
         name: /a guided path from learning to career readiness for every student/i,
@@ -93,6 +100,10 @@ describe('Outpost cards and authentication', () => {
     })
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(refreshPending))
     render(<App />)
+    expect(
+      screen.getByRole('link', { name: 'Acadboost home' }),
+    ).toHaveAttribute('href', '/')
+    expect(screen.getByText('New to Acadboost?')).toBeInTheDocument()
     const submitButton = await screen.findByRole('button', {
       name: /checking your session/i,
     })
