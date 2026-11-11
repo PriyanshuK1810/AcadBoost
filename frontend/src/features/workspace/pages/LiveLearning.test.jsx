@@ -325,7 +325,7 @@ it('does not request progress for a cohort outside the selected organization', a
 it('shows a useful error when a student enters an invalid join code', async () => {
   vi.mocked(learningApi.getMyLearning).mockResolvedValue([])
   vi.mocked(learningApi.joinCohort).mockRejectedValue(
-    new Error('Join code was not found.'),
+    Object.assign(new Error('Cohort invite not found'), { status: 404 }),
   )
   render(
     <MemoryRouter>
@@ -337,7 +337,7 @@ it('shows a useful error when a student enters an invalid join code', async () =
   })
   fireEvent.click(screen.getByRole('button', { name: 'Join cohort' }))
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Join code was not found.',
+    'This join code is invalid, expired, or revoked.',
   )
   expect(screen.getByRole('button', { name: 'Join cohort' })).toBeEnabled()
 })

@@ -20,21 +20,59 @@ export default function StudentDashboardPage() {
     (topic) => topic.completed,
   ).length
   const next = [...topics.values()].find((topic) => !topic.completed)
+  const nextAssignment = next
+    ? learning.find((item) => item.topics.some((topic) => topic.id === next.id))
+    : learning[0]
+  const roadmapUrl = (item) =>
+    '/app/student/roadmap?cohortId=' + encodeURIComponent(item.cohort_id)
   return (
-    <>
+    <div className="student-overview">
       <PageHeading
-        eyebrow="Student / Assigned learning"
+        eyebrow="Student / Overview"
         title={'Good to see you, ' + user.display_name.split(' ')[0] + '.'}
         description="Your enrolled cohorts and personal progress on their exact assigned roadmap versions."
         action={
           <Link className="workspace-button" to="/app/student/learning">
-            Open assigned learning →
+            Join a cohort →
           </Link>
         }
       />
       <LiveResourceState {...resource} />
       {resource.data && (
         <>
+          {!!learning.length && (
+            <section
+              className="student-cohort-section"
+              aria-labelledby="student-cohort-title"
+            >
+              <h2 id="student-cohort-title">My cohorts</h2>
+              <div className="learning-assignments student-cohort-cards">
+                {learning.map((item) => (
+                  <article className="workspace-card" key={item.cohort_id}>
+                    <p className="workspace-eyebrow">
+                      {item.organization_name} / {item.cohort_name}
+                    </p>
+                    <h3>{item.roadmap_name}</h3>
+                    <p>
+                      Version {item.roadmap_version_number} · {item.completed}{' '}
+                      of {item.total} topics complete
+                    </p>
+                    <ProgressBar
+                      value={item.percent}
+                      label={item.cohort_name + ' completion'}
+                    />
+                    <Link
+                      className="workspace-text-link"
+                      to={roadmapUrl(item)}
+                      aria-label={'Continue learning in ' + item.cohort_name}
+                    >
+                      Continue learning →
+                    </Link>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           <div className="workspace-metric-grid">
             <MetricCard
               label="Enrolled cohorts"
@@ -69,37 +107,19 @@ export default function StudentDashboardPage() {
                 {next?.description ||
                   'Open your roadmap to review your saved progress.'}
               </p>
-              <Link className="workspace-text-link" to="/app/student/roadmap">
+              <Link
+                className="workspace-text-link"
+                to={roadmapUrl(nextAssignment)}
+              >
                 View assigned roadmap →
               </Link>
             </section>
           )}
-          <div className="learning-assignments">
-            {learning.map((item) => (
-              <section className="workspace-card" key={item.cohort_id}>
-                <p className="workspace-eyebrow">
-                  {item.organization_name} / {item.cohort_name}
-                </p>
-                <h2>{item.roadmap_name}</h2>
-                <p>
-                  Version {item.roadmap_version_number} · {item.completed} of{' '}
-                  {item.total} topics complete
-                </p>
-                <ProgressBar
-                  value={item.percent}
-                  label={item.cohort_name + ' completion'}
-                />
-                <Link className="workspace-text-link" to="/app/student/roadmap">
-                  Continue learning →
-                </Link>
-              </section>
-            ))}
-          </div>
           <Link className="workspace-text-link" to="/review">
             Open the separately labeled illustrative review →
           </Link>
         </>
       )}
-    </>
+    </div>
   )
 }

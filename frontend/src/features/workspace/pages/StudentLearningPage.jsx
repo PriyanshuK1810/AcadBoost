@@ -1,159 +1,274 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router'
+import LiveResourceState from '../components/LiveResourceState'
 import { EmptyState, PageHeading, ProgressBar } from '../components/WorkspaceUI'
+import { useLiveResource } from '../hooks/useLiveResource'
 import {
   getMyLearning,
   joinCohort,
   setTopicProgress,
   withdrawFromCohort,
 } from '../learningApi'
-export default function StudentLearningPage() {
-  const [learning, setLearning] = useState([])
+
+function joinFailure(status) {
+  if (status === 404)
+    return 'This join code is invalid, expired, or revoked. Ask your coordinator for a current code.'
+  if (status === 403)
+    return 'Your account does not have permission to join this cohort.'
+  if (status === 409)
+    return 'Your enrollment requires staff reinstatement. Contact your coordinator.'
+  if (status === 429)
+    return 'Too many attempts. Wait before trying another code.'
+  if (status === 400 || status === 422)
+    return 'Check the join code and try again.'
+  return 'We couldn’t confirm enrollment. Refresh your cohorts before submitting another code.'
+}
+
+export default function StudentLearningPage({ roadmapOnly = false }) {
+  const resource = useLiveResource(getMyLearning)
+  const [search, setSearch] = useSearchParams()
   const [inviteCode, setInviteCode] = useState('')
   const [busy, setBusy] = useState('')
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  async function reload() {
-    setLearning(await getMyLearning())
-  }
+  const [joinedId, setJoinedId] = useState('')
+  const [needsRefresh, setNeedsRefresh] = useState(false)
+  const pending = useRef(false)
+  const feedbackRef = useRef(null)
+  const learning = resource.data ?? []
+  const requested = search.get('cohortId')
+  const selected =
+    requested ?? (roadmapOnly ? learning[0]?.cohort_id : '') ?? ''
+  const visible = selected
+    ? learning.filter((item) => item.cohort_id === selected)
+    : learning
+  const locked = Boolean(
+    busy || resource.loading || resource.error || needsRefresh,
+  )
+  const joined = learning.find((item) => item.cohort_id === joinedId)
+
   useEffect(() => {
-    let active = true
-    void getMyLearning()
-      .then((items) => {
-        if (active) setLearning(items)
-      })
-      .catch((cause) => {
-        if (active)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Your learning could not be loaded.',
-          )
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-    return () => {
-      active = false
+    if (error || message) feedbackRef.current?.focus()
+  }, [error, message])
+
+  function refresh() {
+    setNeedsRefresh(false)
+    setError('')
+    resource.retry()
+  }
+
+  async function mutate(key, action, failure) {
+    if (pending.current || locked) return
+    pending.current = true
+    setBusy(key)
+    setError('')
+    setMessage('')
+    setJoinedId('')
+    try {
+      const result = await action()
+      setMessage(result.message)
+      if (result.cohortId) setJoinedId(result.cohortId)
+      resource.retry()
+    } catch (cause) {
+      const status = cause?.status
+      setError(failure(status))
+      if (!status || status >= 500) setNeedsRefresh(true)
+      else if (key !== 'join' && [401, 403, 404].includes(status))
+        resource.retry()
+    } finally {
+      pending.current = false
+      setBusy('')
     }
-  }, [])
-  async function submitJoin(event) {
+  }
+
+  function submitJoin(event) {
     event.preventDefault()
-    setBusy('join')
-    setError('')
-    setMessage('')
-    try {
-      const joined = await joinCohort(inviteCode.trim())
-      await reload()
-      setInviteCode('')
-      setMessage(`You joined ${joined.cohort_name}.`)
-    } catch (cause) {
+    const code = inviteCode.trim()
+    if (locked || pending.current) return
+    if (code.length < 20 || code.length > 64) {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : 'The join code could not be used.',
+        code
+          ? 'Check the join code and try again.'
+          : 'Enter your cohort’s join code.',
       )
-    } finally {
-      setBusy('')
+      return
     }
+    const existingIds = new Set(learning.map((item) => item.cohort_id))
+    void mutate(
+      'join',
+      async () => {
+        const result = await joinCohort(code)
+        setInviteCode('')
+        return {
+          cohortId: result.cohort_id,
+          message: existingIds.has(result.cohort_id)
+            ? 'You are already enrolled in ' + result.cohort_name + '.'
+            : 'You joined ' + result.cohort_name + '.',
+        }
+      },
+      joinFailure,
+    )
   }
-  async function changeTopic(topicId, completed) {
-    setBusy(topicId)
-    setError('')
-    setMessage('')
-    try {
-      await setTopicProgress(topicId, completed)
-      await reload()
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : 'Progress could not be saved.',
-      )
-    } finally {
-      setBusy('')
-    }
+
+  function changeTopic(topic) {
+    void mutate(
+      topic.id,
+      async () => {
+        await setTopicProgress(topic.id, !topic.completed)
+        return {
+          message: topic.completed
+            ? 'Topic reopened.'
+            : 'Topic marked complete.',
+        }
+      },
+      () =>
+        'We couldn’t confirm the progress update. Refresh your learning to check the saved state.',
+    )
   }
-  async function leaveCohort(assignment) {
-    setBusy(`leave:${assignment.cohort_id}`)
-    setError('')
-    setMessage('')
-    try {
-      await withdrawFromCohort(assignment.cohort_id)
-      await reload()
-      setMessage(
-        `You left ${assignment.cohort_name}. Your saved progress is retained.`,
-      )
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'You could not leave this cohort.',
-      )
-    } finally {
-      setBusy('')
-    }
+
+  function leaveCohort(assignment) {
+    void mutate(
+      'leave:' + assignment.cohort_id,
+      async () => {
+        await withdrawFromCohort(assignment.cohort_id)
+        return {
+          message:
+            'You left ' +
+            assignment.cohort_name +
+            '. Your saved progress is retained.',
+        }
+      },
+      () =>
+        'We couldn’t confirm that you left the cohort. Refresh your cohorts to check your enrollment.',
+    )
   }
+
   return (
-    <>
+    <div className="student-learning">
       <PageHeading
-        eyebrow="Student / Live learning"
-        title="Your assigned learning"
-        description="Join your coordinator's cohort and track real progress on its assigned roadmap."
+        eyebrow={
+          roadmapOnly ? 'Student / Assigned roadmap' : 'Student / My cohorts'
+        }
+        title={roadmapOnly ? 'Your assigned roadmap' : 'Your assigned learning'}
+        description={
+          roadmapOnly
+            ? 'Read the curriculum assigned to your cohort and update your own progress.'
+            : 'Join a cohort and see your assigned learning and progress.'
+        }
+        action={
+          roadmapOnly && (
+            <Link
+              className="workspace-button workspace-button-outline"
+              to="/app/student/learning"
+            >
+              Manage cohorts
+            </Link>
+          )
+        }
       />
       {error && (
-        <p className="form-error" role="alert">
+        <p className="form-error" role="alert" tabIndex={-1} ref={feedbackRef}>
           {error}
-          <button
-            className="workspace-button"
-            type="button"
-            onClick={() => {
-              setError('')
-              setLoading(true)
-              void reload()
-                .catch((cause) => setError(cause.message))
-                .finally(() => setLoading(false))
-            }}
-          >
-            Try again
-          </button>
         </p>
+      )}
+      {needsRefresh && (
+        <button
+          className="workspace-button workspace-button-outline"
+          type="button"
+          onClick={refresh}
+        >
+          Refresh your learning
+        </button>
       )}
       {message && (
-        <p className="form-message" role="status">
-          {message}
+        <p
+          className="form-message"
+          role="status"
+          tabIndex={-1}
+          ref={feedbackRef}
+        >
+          {message}{' '}
+          {joined && (
+            <Link
+              className="workspace-text-link"
+              to={
+                '/app/student/roadmap?cohortId=' +
+                encodeURIComponent(joined.cohort_id)
+              }
+            >
+              Open assigned learning
+            </Link>
+          )}
         </p>
       )}
-      <section className="workspace-card learning-join">
-        <h2>Join a cohort</h2>
-        <p>
-          Ask your coordinator for the join code. It connects your account to
-          that cohort's published roadmap.
-        </p>
-        <form className="learning-inline-form" onSubmit={submitJoin}>
-          <label className="form-field">
-            <span>Join code</span>
-            <input
-              required
-              minLength={20}
-              maxLength={64}
-              value={inviteCode}
-              onChange={(event) => setInviteCode(event.target.value)}
-              autoComplete="off"
-            />
-          </label>
-          <button className="workspace-button" disabled={busy !== ''}>
-            {busy === 'join' ? 'Joining…' : 'Join cohort'}
-          </button>
-        </form>
-      </section>
-      {loading && <p role="status">Loading your learning…</p>}
-      {!loading && !error && learning.length === 0 && (
+      {!roadmapOnly && (
+        <section id="join-cohort" className="workspace-card learning-join">
+          <h2>Join a cohort</h2>
+          <p>Enter the join code provided by your coordinator.</p>
+          <form
+            className="learning-inline-form"
+            onSubmit={submitJoin}
+            noValidate
+          >
+            <label className="form-field">
+              <span>Join code</span>
+              <input
+                required
+                maxLength={64}
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                readOnly={Boolean(busy)}
+              />
+            </label>
+            <button className="workspace-button" disabled={locked}>
+              {busy === 'join' ? 'Joining…' : 'Join cohort'}
+            </button>
+          </form>
+        </section>
+      )}
+      <LiveResourceState {...resource} />
+      {!!learning.length && (
+        <label className="form-field student-cohort-picker">
+          <span>Cohort</span>
+          <select
+            value={selected}
+            onChange={(event) => {
+              const next = new URLSearchParams(search)
+              if (event.target.value) next.set('cohortId', event.target.value)
+              else next.delete('cohortId')
+              setSearch(next)
+            }}
+          >
+            {!roadmapOnly && <option value="">All cohorts</option>}
+            {requested && !visible.length && (
+              <option value={requested}>Unavailable cohort</option>
+            )}
+            {learning.map((item) => (
+              <option key={item.cohort_id} value={item.cohort_id}>
+                {item.cohort_name} · {item.organization_name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {resource.data && !visible.length && (
         <EmptyState
-          title="No assigned roadmap yet"
-          description="Once you enter a cohort join code, its roadmap will appear here."
+          title={
+            selected ? 'This cohort is unavailable' : 'No assigned roadmap yet'
+          }
+          description={
+            selected
+              ? 'Choose another cohort or return to your cohort list.'
+              : 'Join a cohort to open its assigned roadmap.'
+          }
+          actionTo={roadmapOnly ? '/app/student/learning' : undefined}
+          actionLabel={roadmapOnly ? 'Open my cohorts' : undefined}
         />
       )}
       <div className="learning-assignments">
-        {learning.map((assignment) => (
+        {visible.map((assignment) => (
           <section
             className="workspace-card learning-assignment"
             key={assignment.cohort_id}
@@ -164,7 +279,7 @@ export default function StudentLearningPage() {
                   {assignment.organization_name} / {assignment.cohort_name}
                 </p>
                 <h2>{assignment.roadmap_name}</h2>
-                <p>Version {assignment.roadmap_version_number}</p>
+                <p>Assigned version {assignment.roadmap_version_number}</p>
                 <p>
                   {assignment.completed} of {assignment.total} topics completed
                 </p>
@@ -173,23 +288,34 @@ export default function StudentLearningPage() {
             </div>
             <ProgressBar
               value={assignment.percent}
-              label={`${assignment.roadmap_name} completion`}
+              label={assignment.cohort_name + ' completion'}
             />
-            <div className="learning-assignment-actions">
-              <button
-                type="button"
-                className="workspace-button workspace-button-outline"
-                disabled={busy !== ''}
-                onClick={() => void leaveCohort(assignment)}
-              >
-                {busy === `leave:${assignment.cohort_id}`
-                  ? 'Leaving…'
-                  : 'Leave cohort'}
-              </button>
-              <small>
-                Your completed topics remain saved if you join again.
-              </small>
-            </div>
+            {!roadmapOnly && (
+              <div className="learning-assignment-actions">
+                <Link
+                  className="workspace-text-link"
+                  to={
+                    '/app/student/roadmap?cohortId=' +
+                    encodeURIComponent(assignment.cohort_id)
+                  }
+                >
+                  Open assigned roadmap
+                </Link>
+                <button
+                  type="button"
+                  className="workspace-button workspace-button-outline"
+                  disabled={locked}
+                  onClick={() => leaveCohort(assignment)}
+                >
+                  {busy === 'leave:' + assignment.cohort_id
+                    ? 'Leaving…'
+                    : 'Leave cohort'}
+                </button>
+                <small>
+                  Your completed topics remain saved if you join again.
+                </small>
+              </div>
+            )}
             {(
               assignment.phases || [
                 {
@@ -199,16 +325,20 @@ export default function StudentLearningPage() {
                 },
               ]
             ).map((phase) => (
-              <section className="learning-phase" key={phase.id}>
-                {phase.title && <h3>{phase.title}</h3>}
+              <details
+                className="learning-phase student-phase"
+                key={phase.id}
+                open
+              >
+                <summary>{phase.title || 'Topics'}</summary>
                 {phase.weeks.map((week) => (
                   <section className="learning-week" key={week.id}>
-                    {week.title && <h4>{week.title}</h4>}
+                    {week.title && <h3>{week.title}</h3>}
                     <div className="learning-topic-list">
                       {week.topics.map((topic) => (
                         <div className="learning-topic" key={topic.id}>
                           <div>
-                            <h3>{topic.title}</h3>
+                            <h4>{topic.title}</h4>
                             {topic.description && <p>{topic.description}</p>}
                           </div>
                           <button
@@ -218,11 +348,14 @@ export default function StudentLearningPage() {
                                 ? 'learning-topic-done'
                                 : 'workspace-button'
                             }
-                            disabled={busy !== ''}
-                            onClick={() =>
-                              void changeTopic(topic.id, !topic.completed)
-                            }
+                            disabled={locked}
+                            onClick={() => changeTopic(topic)}
                             aria-pressed={topic.completed}
+                            aria-description={
+                              topic.completed
+                                ? 'Activate to reopen this topic'
+                                : undefined
+                            }
                           >
                             {busy === topic.id
                               ? 'Saving…'
@@ -235,11 +368,11 @@ export default function StudentLearningPage() {
                     </div>
                   </section>
                 ))}
-              </section>
+              </details>
             ))}
           </section>
         ))}
       </div>
-    </>
+    </div>
   )
 }

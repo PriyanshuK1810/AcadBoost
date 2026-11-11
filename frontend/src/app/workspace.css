@@ -3164,3 +3164,54 @@
     flex-basis: 100%;
   }
 }
+.student-learning,
+.student-overview {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.student-cohort-cards {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+}
+
+.student-cohort-section {
+  margin-block-end: var(--space-5);
+}
+
+.student-cohort-picker {
+  width: min(100%, 28rem);
+  margin-block: var(--space-4);
+}
+
+.student-cohort-picker select,
+.student-learning .learning-inline-form .form-field {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.student-phase summary {
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-sage);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.student-learning .learning-topic > div,
+.student-learning .learning-assignment-header > div {
+  min-inline-size: 0;
+}
+
+.student-learning .learning-assignment-header > strong {
+  white-space: nowrap;
+}
+
+.student-learning .learning-topic button {
+  min-block-size: 44px;
+}
+
+@media (max-width: 540px) {
+  .student-learning .learning-inline-form .workspace-button {
+    width: 100%;
+  }
+}

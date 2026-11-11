@@ -296,7 +296,9 @@ it('loads assigned learning without sample data and preserves completion when sa
   expect(reviewApi.getReviewOverview).not.toHaveBeenCalled()
   rejectSave(new Error('Save failed'))
   await waitFor(() =>
-    expect(screen.getByRole('alert')).toHaveTextContent('Save failed'),
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Refresh your learning to check the saved state.',
+    ),
   )
   expect(screen.getByText('0 of 1 topics completed')).toBeInTheDocument()
 })

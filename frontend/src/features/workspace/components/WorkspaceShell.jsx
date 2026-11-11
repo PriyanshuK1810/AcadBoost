@@ -36,7 +36,7 @@ import {
 import ForestLandscapeArtwork from './ForestLandscapeArtwork'
 const studentLinks = [
   { to: '/app/student', label: 'Overview', end: true },
-  { to: '/app/student/learning', label: 'My assigned learning' },
+  { to: '/app/student/learning', label: 'My cohorts' },
   { to: '/app/student/roadmap', label: 'Assigned roadmap' },
   { to: '/app/student/activity', label: 'Activity' },
   { to: '/app/student/deadlines', label: 'Deadlines' },
