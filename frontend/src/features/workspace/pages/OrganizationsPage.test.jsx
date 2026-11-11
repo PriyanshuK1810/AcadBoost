@@ -84,6 +84,46 @@ it('lets an owner issue an invitation and displays its one-time code', async () 
   expect(await screen.findByText('secret-code')).toBeInTheDocument()
 })
 
+it('keeps the full member identity and Owner controls together for long names and emails', async () => {
+  const name = 'Coordinator' + 'LongUnbrokenName'.repeat(8)
+  const email = 'disposable@a-very-long-department.fixture.example.test'
+  const member = {
+    id: 'membership-2',
+    user_id: 'coordinator-2',
+    display_name: name,
+    email,
+    account_type: 'coordinator',
+    role: 'coordinator',
+    status: 'active',
+  }
+  learningApi.listOrganizationMembers.mockResolvedValue([member])
+  learningApi.updateOrganizationMember.mockResolvedValue({
+    ...member,
+    role: 'mentor',
+  })
+  render(
+    <MemoryRouter initialEntries={['/app/organizations/org-1']}>
+      <Routes>
+        <Route
+          path="/app/organizations/:organizationId"
+          element={<OrganizationDetailPage />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  )
+  expect(await screen.findByRole('heading', { name })).toBeVisible()
+  expect(screen.getByText(email)).toBeVisible()
+  expect(screen.getByText('coordinator · active')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Deactivate' })).toBeEnabled()
+  const role = screen.getByRole('combobox', { name: `Role for ${name}` })
+  fireEvent.change(role, { target: { value: 'mentor' } })
+  expect(learningApi.updateOrganizationMember).toHaveBeenCalledWith(
+    'org-1',
+    'membership-2',
+    { role: 'mentor' },
+  )
+})
+
 it('lets a coordinator accept a staff invitation', async () => {
   vi.mocked(learningApi.acceptOrganizationInvitation).mockResolvedValue({
     organization_name: 'Campus',

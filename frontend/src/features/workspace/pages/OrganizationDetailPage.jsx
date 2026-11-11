@@ -165,7 +165,7 @@ function OrganizationDetails({ organizationId }) {
   }
 
   return (
-    <>
+    <div className="organization-detail">
       <PageHeading
         eyebrow="Workspace / Organizations"
         title={visibleOrganization?.name ?? 'Organization'}
@@ -203,7 +203,7 @@ function OrganizationDetails({ organizationId }) {
               <div className="organization-member-list">
                 {members.map((member) => (
                   <article className="organization-member" key={member.id}>
-                    <div>
+                    <div className="organization-member-identity">
                       <h3>{member.display_name}</h3>
                       <p>
                         <span>{member.email ?? 'No email'}</span> ·{' '}
@@ -320,7 +320,7 @@ function OrganizationDetails({ organizationId }) {
               <div className="organization-member-list">
                 {invitations.map((invitation) => (
                   <article className="organization-member" key={invitation.id}>
-                    <div>
+                    <div className="organization-member-identity">
                       <strong>{invitation.email}</strong>
                       <p>
                         {invitation.role} · {invitation.status}
@@ -347,6 +347,6 @@ function OrganizationDetails({ organizationId }) {
           </section>
         </>
       )}
-    </>
+    </div>
   )
 }

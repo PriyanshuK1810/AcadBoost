@@ -287,7 +287,9 @@ it('invalidates an open approval when the selected version changes', async () =>
   expect(dialog).not.toHaveAttribute('open')
   fireEvent.click(confirmation)
   expect(api.approveRoadmapVersion).not.toHaveBeenCalled()
-  expect(screen.getByRole('button', { name: 'Review draft' })).toBeEnabled()
+  expect(
+    await screen.findByRole('button', { name: 'Review draft' }),
+  ).toBeEnabled()
 })
 
 it('preserves successful approval when the authoritative refresh fails', async () => {
@@ -1210,11 +1212,16 @@ it.each(['published', 'archived'])(
       version_number: 3,
       revision: 1,
     }
+    const otherDraft = {
+      ...copy,
+      version_id: 'unrelated-version-4',
+      version_number: 4,
+    }
     api.listRoadmapVersions
       .mockResolvedValueOnce([original, source])
-      .mockResolvedValueOnce([original, source, copy])
+      .mockResolvedValue([original, source, copy, otherDraft])
     api.copyRoadmapVersion.mockResolvedValue(copy)
-    renderVersions()
+    const router = renderVersions()
     fireEvent.click(await screen.findByRole('button', { name: /Version 2/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Copy as new draft' }))
     await waitFor(() =>
@@ -1229,8 +1236,95 @@ it.each(['published', 'archived'])(
       await screen.findByRole('button', { name: /Version 3/ }),
     ).toHaveAttribute('aria-pressed', 'true')
     expect(api.listRoadmapVersions).toHaveBeenCalledTimes(2)
+    expect(router.state.location.search).toBe(
+      '?organizationId=org-1&versionId=version-3',
+    )
+    await act(() => router.navigate(-1))
+    expect(
+      await screen.findByRole('button', { name: /Version 2/ }),
+    ).toHaveAttribute('aria-pressed', 'true')
+    expect(router.state.location.search).toBe(
+      '?organizationId=org-1&versionId=version-2',
+    )
+    await act(() => router.navigate(1))
+    expect(
+      await screen.findByRole('button', { name: /Version 3/ }),
+    ).toHaveAttribute('aria-pressed', 'true')
+    expect(api.copyRoadmapVersion).toHaveBeenCalledTimes(1)
   },
 )
+it('preserves a confirmed copy when the exact draft list cannot load and retries only the read', async () => {
+  const source = { ...original, status: 'published' }
+  const created = {
+    ...original,
+    version_id: 'created-draft',
+    version_number: 2,
+  }
+  api.copyRoadmapVersion.mockResolvedValue(created)
+  api.listRoadmapVersions
+    .mockResolvedValueOnce([source])
+    .mockRejectedValueOnce(new Error('Service unavailable'))
+    .mockResolvedValue([source, created])
+  const router = renderVersions()
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Copy as new draft' }),
+  )
+  expect(await screen.findByText(/Draft v2 created/)).toBeInTheDocument()
+  expect(router.state.location.search).toContain('versionId=created-draft')
+  expect(screen.queryByRole('textbox', { name: 'Topic 1' })).toBeNull()
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Retry version list' }),
+  )
+  expect(
+    await screen.findByRole('textbox', { name: 'Topic 1' }),
+  ).toBeInTheDocument()
+  expect(api.copyRoadmapVersion).toHaveBeenCalledTimes(1)
+})
+
+it('uses an exact URL and restores focus when choosing a version in the native picker', async () => {
+  const older = { ...original, status: 'in_review' }
+  const latest = { ...original, version_id: 'version-2', version_number: 2 }
+  api.listRoadmapVersions.mockResolvedValue([older, latest])
+  const router = renderVersions()
+  const picker = () => screen.getByLabelText('Selected version')
+  await screen.findByLabelText('Selected version')
+  expect(
+    screen.getByRole('option', { name: 'Version 1 · In review' }),
+  ).toBeInTheDocument()
+  fireEvent.change(picker(), { target: { value: older.version_id } })
+  expect(
+    await screen.findByText('This version is under review.'),
+  ).toBeInTheDocument()
+  expect(picker()).toHaveValue(older.version_id)
+  expect(picker()).toHaveFocus()
+  expect(router.state.location.search).toBe(
+    '?organizationId=org-1&versionId=version-1',
+  )
+  expect(api.copyRoadmapVersion).not.toHaveBeenCalled()
+})
+
+it('does not navigate to a copy response with a different organization', async () => {
+  api.listRoadmapVersions.mockResolvedValue([
+    { ...original, status: 'published' },
+  ])
+  api.copyRoadmapVersion.mockResolvedValue({
+    ...original,
+    organization_id: 'org-2',
+    version_id: 'foreign-copy',
+  })
+  const router = renderVersions()
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Copy as new draft' }),
+  )
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'did not identify its draft',
+  )
+  expect(router.state.location.search).toBe('?organizationId=org-1')
+  expect(
+    screen.getByRole('button', { name: 'Copy as new draft' }),
+  ).toBeDisabled()
+  expect(api.copyRoadmapVersion).toHaveBeenCalledTimes(1)
+})
 it('archives with the selected revision and reloads authoritative status', async () => {
   const published = { ...original, status: 'published' }
   const archived = { ...published, status: 'archived', revision: 8 }

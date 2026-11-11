@@ -1326,6 +1326,7 @@
 }
 .organization-member-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 20px;
 }
@@ -1348,12 +1349,25 @@
 }
 .organization-member-actions label {
   display: grid;
+  min-inline-size: 0;
   gap: 5px;
   font-size: 0.82rem;
   color: var(--workspace-muted);
+  overflow-wrap: anywhere;
 }
 .organization-member-actions select {
-  min-width: 140px;
+  min-inline-size: min(100%, 140px);
+  max-inline-size: 100%;
+}
+.organization-detail .workspace-page-heading > div,
+.organization-detail .learning-inline-form .form-field,
+.organization-member-identity,
+.organization-member-actions {
+  min-inline-size: 0;
+}
+.organization-detail .workspace-page-heading h1,
+.organization-member-identity {
+  overflow-wrap: anywhere;
 }
 .organization-invite-code {
   display: grid;
@@ -1374,14 +1388,14 @@
 }
 @media (max-width: 700px) {
   .organization-member {
-    align-items: stretch;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-3);
   }
   .organization-member-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
-  }
-  .organization-member-actions .workspace-button {
-    width: 100%;
   }
 }
 .organization-member h3,
@@ -1791,7 +1805,8 @@
   margin: 16px 0;
   background: #fbfdfa;
 }
-.roadmap-week {
+.roadmap-week,
+.roadmap-draft-week {
   border-left: 3px solid #a8bead;
   padding: 10px 0 10px 16px;
   margin: 12px 0;
@@ -1813,6 +1828,7 @@
 .roadmap-edit-row button,
 .roadmap-phase > button,
 .roadmap-week > button,
+.roadmap-draft-week > button,
 .roadmap-actions > button:not(.workspace-button) {
   border: 1px solid var(--workspace-line);
   border-radius: 7px;
@@ -2605,7 +2621,8 @@
   display: none;
 }
 .roadmap-phase summary,
-.roadmap-week summary {
+.roadmap-week summary,
+.roadmap-draft-week summary {
   cursor: pointer;
   padding: 8px 0 16px;
   font-weight: 650;
@@ -2625,6 +2642,10 @@
 }
 .roadmap-readonly p {
   white-space: pre-wrap;
+}
+.roadmap-readonly,
+.roadmap-draft-fields summary {
+  overflow-wrap: anywhere;
 }
 .report-selectors {
   display: flex;
@@ -2707,6 +2728,10 @@
     display: grid;
     gap: 8px;
   }
+  .mobile-version-select select {
+    min-inline-size: 0;
+    inline-size: 100%;
+  }
   .roadmap-version-list {
     padding: 16px;
   }
@@ -2714,7 +2739,9 @@
     display: block;
   }
   .roadmap-editor {
+    --roadmap-editor-gutter: var(--space-3);
     margin-top: 16px;
+    padding-inline: var(--roadmap-editor-gutter);
   }
   .roadmap-edit-row .form-field {
     flex-basis: 100%;
@@ -2722,6 +2749,28 @@
   .roadmap-phase,
   .roadmap-week {
     padding: 12px;
+  }
+  .roadmap-draft-fields .roadmap-phase {
+    padding: var(--space-2);
+  }
+  .roadmap-draft-week {
+    padding: var(--space-2) 0 var(--space-2) var(--space-2);
+  }
+  .roadmap-draft-fields .roadmap-edit-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+  .roadmap-draft-fields .form-field,
+  .roadmap-draft-fields .roadmap-edit-row > button:last-child {
+    grid-column: 1 / -1;
+  }
+  .roadmap-draft-fields :is(input, textarea) {
+    min-inline-size: 0;
+    inline-size: 100%;
+  }
+  .roadmap-draft-fields .roadmap-edit-row > button:last-child {
+    color: var(--color-danger);
   }
   .roadmap-toolbar > a,
   .roadmap-toolbar > button {
@@ -3101,8 +3150,8 @@
     min-height: 420px;
   }
   .roadmap-editor-actions {
-    margin-inline: -20px;
-    padding: 12px 20px 0;
+    margin-inline: calc(-1 * var(--roadmap-editor-gutter, 20px));
+    padding: 12px var(--roadmap-editor-gutter, 20px) 0;
   }
   .roadmap-editor-actions .workspace-button,
   .roadmap-actions.plan-save-bar .workspace-button {

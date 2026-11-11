@@ -2,7 +2,14 @@ import { listPlans } from '../activityPlanApi'
 import useUnsavedChanges from '../hooks/useUnsavedChanges'
 import { outlineProblems } from '../outlineValidation'
 import { useContext, useEffect, useRef, useState } from 'react'
-import { Link, Navigate, useLocation, useParams, useSearchParams } from 'react-router'
+import {
+  Link,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router'
 import { WorkspaceContext } from '../hooks/useWorkspace'
 import { learningRoles, withOrganization } from '../hooks/useOrganizationScope'
 import LiveResourceState from '../components/LiveResourceState'
@@ -38,6 +45,12 @@ const topicCount = (phases) =>
       total + phase.weeks.reduce((sum, week) => sum + week.topics.length, 0),
     0,
   )
+const statusLabels = {
+  draft: 'Draft',
+  in_review: 'In review',
+  published: 'Published',
+  archived: 'Archived',
+}
 const formatVersionDate = (value) => {
   if (!value) return '—'
   const date = new Date(value)
@@ -149,8 +162,8 @@ export default function RoadmapVersionsPage() {
   const scope = useContext(WorkspaceContext)?.organizationScope
   if (scope?.loading || scope?.error) return <LiveResourceState {...scope} />
   return (
-    <RoadmapVersionWorkspace
-      key={JSON.stringify([roadmapId, preferredOrg, preferredVersion])}
+    <RoadmapVersionScope
+      key={JSON.stringify([roadmapId, preferredOrg])}
       roadmapId={roadmapId}
       search={search}
       preferredOrg={preferredOrg}
@@ -158,6 +171,25 @@ export default function RoadmapVersionsPage() {
       showFeedback={showFeedback}
       memberships={scope?.organizations}
       address={location.pathname + location.search + location.hash}
+      pathname={location.pathname}
+      navigationState={location.state}
+    />
+  )
+}
+
+function RoadmapVersionScope(props) {
+  // Keep unsent review feedback and decision guards when changing versions
+  // within the same roadmap, and discard them when the scope changes.
+  const [decisionBlocks, setDecisionBlocks] = useState({})
+  const [rejectionReasons, setRejectionReasons] = useState({})
+  return (
+    <RoadmapVersionWorkspace
+      key={props.preferredVersion}
+      {...props}
+      decisionBlocks={decisionBlocks}
+      setDecisionBlocks={setDecisionBlocks}
+      rejectionReasons={rejectionReasons}
+      setRejectionReasons={setRejectionReasons}
     />
   )
 }
@@ -170,7 +202,14 @@ function RoadmapVersionWorkspace({
   showFeedback,
   memberships,
   address,
+  pathname,
+  navigationState,
+  decisionBlocks,
+  setDecisionBlocks,
+  rejectionReasons,
+  setRejectionReasons,
 }) {
+  const navigate = useNavigate()
   const [organizationId, setOrganizationId] = useState('')
   const [organizationRole, setOrganizationRole] = useState('')
   const [sourcePlan, setSourcePlan] = useState(null)
@@ -187,8 +226,12 @@ function RoadmapVersionWorkspace({
   const [confirmation, setConfirmation] = useState(null)
   const [decision, setDecision] = useState(null)
   const [decisionError, setDecisionError] = useState('')
-  const [decisionBlocks, setDecisionBlocks] = useState({})
-  const [rejectionReasons, setRejectionReasons] = useState({})
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [confirmedCopy, setConfirmedCopy] = useState(null)
+  const [copyUnidentified, setCopyUnidentified] = useState(false)
+  const copyPendingRef = useRef(false)
+  const mobilePickerRef = useRef(null)
+  const activeChoiceRef = useRef(null)
   const dialogRef = useRef(null)
   const submitTriggerRef = useRef(null)
   const decisionDialogRef = useRef(null)
@@ -212,6 +255,8 @@ function RoadmapVersionWorkspace({
   const reason = rejectionReasons[decision?.versionId || activeId] || ''
   const reasonValid =
     reason.trim().length > 0 && reason.length <= rejectionLimit
+  const copyReceipt = navigationState?.copiedDraft
+  const pickerFocus = navigationState?.focusVersionPicker
 
   useEffect(() => {
     mountedRef.current = true
@@ -234,6 +279,16 @@ function RoadmapVersionWorkspace({
       else versionHeadingRef.current?.focus()
     }
   }, [decision])
+
+  useEffect(() => {
+    const dialog = decisionDialogRef.current
+    return () => {
+      if (dialog?.open) {
+        if (dialog.close) dialog.close()
+        else dialog.removeAttribute('open')
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -260,7 +315,15 @@ function RoadmapVersionWorkspace({
           : organizations
         for (const organization of candidates) {
           if (!mounted) return
-          if (memberships && !learningRoles.includes(organization.role)) continue
+          if (memberships && !learningRoles.includes(organization.role))
+            continue
+          if (
+            copyReceipt?.organizationId === organization.id &&
+            copyReceipt.roadmapId === roadmapId &&
+            copyReceipt.versionId === preferredVersion
+          ) {
+            setConfirmedCopy(copyReceipt)
+          }
           try {
             const loaded = await listRoadmapVersions(organization.id, roadmapId)
             const rows = preferredVersion === null && !memberships
@@ -297,7 +360,20 @@ function RoadmapVersionWorkspace({
     return () => {
       mounted = false
     }
-  }, [memberships, preferredOrg, preferredVersion, roadmapId])
+  }, [
+    copyReceipt,
+    loadAttempt,
+    memberships,
+    preferredOrg,
+    preferredVersion,
+    roadmapId,
+  ])
+
+  useEffect(() => {
+    if (loading || !activeId || !pickerFocus) return
+    const picker = pickerFocus === 'mobile' ? mobilePickerRef : activeChoiceRef
+    picker.current?.focus({ preventScroll: true })
+  }, [activeId, loading, pickerFocus])
 
   const feedbackSelected = showFeedback && !!active && active.version_id === preferredVersion
   useEffect(() => {
@@ -319,21 +395,30 @@ function RoadmapVersionWorkspace({
       live = false
     }
   }, [organizationId, roadmapId])
-  function selectVersion(version) {
-    if (!version || busy || confirmation || decisionPendingRef.current) return
+  function versionAddress(versionId) {
+    const params = new URLSearchParams(search)
+    params.set('organizationId', organizationId)
+    params.set('versionId', versionId)
+    return pathname + '?' + params
+  }
+
+  function selectVersion(version, focusVersionPicker) {
+    if (
+      !version ||
+      version.version_id === activeId ||
+      busy ||
+      confirmation ||
+      decisionPendingRef.current ||
+      copyPendingRef.current
+    )
+      return
     if (dirty) {
       setError('Save your draft before switching versions.')
       return
     }
-    setDecision(null)
-    setActiveId(version.version_id)
-    selectedIdRef.current = version.version_id
-    setDraft(editable(version.phases))
-    setDirty(false)
-    setReviewing(false)
-    setMessage('')
-    setError('')
-    setRecovery(null)
+    void navigate(versionAddress(version.version_id), {
+      state: { focusVersionPicker },
+    })
   }
   function change(mutator) {
     setDraft((current) => {
@@ -744,9 +829,18 @@ function RoadmapVersionWorkspace({
     }
   }
   async function copy() {
-    if (!canCopy || busy || dirty || recovery) return
+    if (
+      !canCopy ||
+      busy ||
+      dirty ||
+      recovery ||
+      copyPendingRef.current ||
+      copyUnidentified
+    )
+      return
     const revision = requireRevision(active)
     if (revision === null) return
+    copyPendingRef.current = true
     setBusy(true)
     setError('')
     try {
@@ -756,11 +850,37 @@ function RoadmapVersionWorkspace({
         active.version_id,
         revision,
       )
-      await refreshVersions(next.version_id)
-      setMessage(
-        `Draft v${next.version_number} created with independent topic IDs.`,
-      )
+      if (!mountedRef.current) return
+      if (
+        !next?.version_id ||
+        next.version_id === active.version_id ||
+        next.id !== roadmapId ||
+        next.organization_id !== organizationId ||
+        next.status !== 'draft'
+      ) {
+        setCopyUnidentified(true)
+        setError(
+          'The server accepted the copy but did not identify its draft. Reload the version list before taking another action.',
+        )
+        return
+      }
+      // A legacy URL without an exact version would otherwise open the new
+      // latest draft on Back instead of the version it was copied from.
+      if (preferredVersion === null) {
+        void navigate(versionAddress(active.version_id), { replace: true })
+      }
+      void navigate(versionAddress(next.version_id), {
+        state: {
+          copiedDraft: {
+            organizationId,
+            roadmapId,
+            versionId: next.version_id,
+            versionNumber: next.version_number,
+          },
+        },
+      })
     } catch (cause) {
+      if (!mountedRef.current) return
       if (cause.status === 409) {
         setRecovery({ kind: 'mutation', latest: null })
         setError(
@@ -768,8 +888,15 @@ function RoadmapVersionWorkspace({
         )
       } else setError(cause.message)
     } finally {
-      setBusy(false)
+      copyPendingRef.current = false
+      if (mountedRef.current) setBusy(false)
     }
+  }
+
+  function retryVersionList() {
+    setError('')
+    setLoading(true)
+    setLoadAttempt((attempt) => attempt + 1)
   }
 
   if (memberships && preferredOrg === null && organizationId) {
@@ -811,6 +938,24 @@ function RoadmapVersionWorkspace({
         <p className="form-error" role="alert">
           {error}
         </p>
+      )}
+      {confirmedCopy && !loading && (
+        <p className="form-message" role="status">
+          {Number.isInteger(confirmedCopy.versionNumber)
+            ? `Draft v${confirmedCopy.versionNumber} created.`
+            : 'Draft created.'}
+          {!active && ' Its details could not be loaded yet.'}
+        </p>
+      )}
+      {((confirmedCopy && !active && !loading) || copyUnidentified) && (
+        <button
+          type="button"
+          className="workspace-button workspace-button-outline"
+          disabled={loading}
+          onClick={retryVersionList}
+        >
+          Retry version list
+        </button>
       )}
       {recovery && (
         <section className="workspace-card" aria-label="Version recovery">
@@ -1026,20 +1171,30 @@ function RoadmapVersionWorkspace({
           >
             <h2>Version history</h2>
             <label className="mobile-version-select">
-              Version
+              Selected version
               <select
+                ref={mobilePickerRef}
                 value={activeId}
                 disabled={busy}
-                onChange={(e) =>
+                onChange={(event) => {
+                  const nextId = event.target.value
+                  // Keep the current selection visible if edits block the switch.
+                  event.target.value = activeId
                   selectVersion(
-                    versions.find((v) => v.version_id === e.target.value),
+                    versions.find((v) => v.version_id === nextId),
+                    'mobile',
                   )
-                }
+                }}
               >
-                {!activeId && <option value="" disabled>Select a version</option>}
+                {!activeId && (
+                  <option value="" disabled>
+                    Choose a version
+                  </option>
+                )}
                 {versions.map((v) => (
                   <option key={v.version_id} value={v.version_id}>
-                    Version {v.version_number} · {v.status}
+                    Version {v.version_number} ·{' '}
+                    {statusLabels[v.status] ?? 'Unknown status'}
                   </option>
                 ))}
               </select>
@@ -1049,9 +1204,10 @@ function RoadmapVersionWorkspace({
                 type="button"
                 key={version.version_id}
                 className={`roadmap-version-choice ${version.version_id === activeId ? 'is-active' : ''}`}
+                ref={version.version_id === activeId ? activeChoiceRef : null}
                 aria-pressed={version.version_id === activeId}
                 disabled={busy}
-                onClick={() => selectVersion(version)}
+                onClick={() => selectVersion(version, 'desktop')}
               >
                 <strong>Version {version.version_number}</strong>
                 <span className="roadmap-version-choice-meta">
@@ -1128,7 +1284,10 @@ function RoadmapVersionWorkspace({
                     Edit phase, week, and topic titles below. Save the ordered
                     draft before review.
                   </p>
-                  <fieldset className="plan-fieldset" disabled={busy}>
+                  <fieldset
+                    className="plan-fieldset roadmap-draft-fields"
+                    disabled={busy}
+                  >
                     {draft.map((phase, phaseIndex) => (
                       <details
                         open={phaseIndex === 0 || !phase.title}
@@ -1189,7 +1348,7 @@ function RoadmapVersionWorkspace({
                               (phaseIndex === 0 && weekIndex === 0) ||
                               !week.title
                             }
-                            className="roadmap-week"
+                            className="roadmap-draft-week"
                             key={weekIndex}
                           >
                             <summary>
@@ -1565,7 +1724,7 @@ function RoadmapVersionWorkspace({
                     <button
                       type="button"
                       className="workspace-button workspace-button-outline"
-                      disabled={busy || dirty || !!recovery}
+                      disabled={busy || dirty || !!recovery || copyUnidentified}
                       onClick={copy}
                     >
                       Copy as new draft
