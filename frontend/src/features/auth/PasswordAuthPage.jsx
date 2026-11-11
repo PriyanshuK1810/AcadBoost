@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import BrandWordmark from '../../app/BrandWordmark'
 import { PRODUCT_BRAND } from '../../app/brand'
-import { ApiRequestError } from '../../shared/api/client'
+import {
+  ApiRequestError,
+  canRestoreSession,
+  getSessionPhase,
+} from '../../shared/api/client'
 import {
   dashboardPath,
   registerWithPassword,
@@ -14,6 +18,9 @@ export default function PasswordAuthPage({ mode }) {
   const navigate = useNavigate()
   const location = useLocation()
   const registered = !isRegistration && Boolean(location.state?.registered)
+  const signedOut = !isRegistration && Boolean(location.state?.signedOut)
+  const unconfirmedSignOut =
+    !isRegistration && getSessionPhase() === 'logout-failed'
   const [displayName, setDisplayName] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -29,7 +36,7 @@ export default function PasswordAuthPage({ mode }) {
     let active = true
     void restoreSession()
       .then((user) => {
-        if (active && user)
+        if (active && user && canRestoreSession())
           navigate(dashboardPath(user.account_type), { replace: true })
       })
       .finally(() => {
@@ -94,8 +101,8 @@ export default function PasswordAuthPage({ mode }) {
           </p>
           <h1>A clearer path starts here.</h1>
           <p>
-            {PRODUCT_BRAND} brings learning, practice, and progress together so every
-            student can move forward with confidence.
+            {PRODUCT_BRAND} brings learning, practice, and progress together so
+            every student can move forward with confidence.
           </p>
           <div className="auth-story-footer">
             <span className="auth-story-marker" aria-hidden="true">
@@ -119,6 +126,17 @@ export default function PasswordAuthPage({ mode }) {
           {registered && (
             <p className="form-message" role="status">
               Account created. Sign in with your new credentials to continue.
+            </p>
+          )}
+          {signedOut && (
+            <p className="form-message" role="status">
+              You’ve signed out.
+            </p>
+          )}
+          {unconfirmedSignOut && (
+            <p className="form-error" role="alert">
+              We couldn’t confirm your previous sign-out. You can sign in here
+              or return to the workspace to retry sign-out.
             </p>
           )}
           {error && (

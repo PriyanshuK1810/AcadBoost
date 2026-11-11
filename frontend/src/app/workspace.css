@@ -169,6 +169,96 @@
   font-weight: 650;
   color: #254a3c;
 }
+.workspace-account-menu {
+  position: relative;
+}
+.workspace-account-menu > button {
+  min-height: 44px;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+.workspace-topbar:has(.workspace-account-options:not([hidden])) {
+  position: relative;
+  z-index: 3;
+}
+.workspace-account-options {
+  position: absolute;
+  inset: calc(100% + 6px) 0 auto auto;
+  width: min(200px, calc(100vw - 48px));
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-dialog);
+}
+.workspace-account-options :is(a, button) {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.workspace-account-options :is(a, button):is(:hover, :focus-visible) {
+  background: var(--color-sage);
+}
+.session-status-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: clamp(18px, 4vw, 26px);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-dialog);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  text-align: center;
+  box-shadow: var(--shadow-dialog);
+}
+.session-status-dialog::backdrop {
+  background: var(--color-dialog-backdrop);
+}
+.session-status-dialog h2 {
+  margin: 12px 0 8px;
+}
+.session-status-dialog p {
+  line-height: 1.5;
+}
+.session-status-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-inline: auto;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-sage);
+  color: var(--color-forest);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.session-status-dialog:has(p[role='alert']) .session-status-icon {
+  background: var(--color-danger-surface);
+  color: var(--color-danger);
+}
+.session-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+.session-status-actions button {
+  min-height: 44px;
+}
 .workspace-avatar {
   display: grid;
   place-items: center;

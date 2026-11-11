@@ -1,4 +1,10 @@
-import { useEffect, useState, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useRef,
+  useSyncExternalStore,
+} from 'react'
 import {
   Link,
   NavLink,
@@ -7,7 +13,19 @@ import {
   useLocation,
   useNavigate,
 } from 'react-router'
-import { restoreSession, signOut, dashboardPath } from '../../auth/authApi'
+import {
+  restoreSession,
+  signOut,
+  signOutAll,
+  dashboardPath,
+} from '../../auth/authApi'
+import {
+  canRestoreSession,
+  getSessionPhase,
+  subscribeSession,
+} from '../../../shared/api/client'
+import SessionStatusDialog from '../../auth/SessionStatusDialog'
+import WorkspaceAccountMenu from '../../auth/WorkspaceAccountMenu'
 import BrandWordmark from '../../../app/BrandWordmark'
 import { PRODUCT_TAGLINE } from '../../../app/brand'
 import { WorkspaceContext } from '../hooks/useWorkspace'
@@ -38,6 +56,15 @@ export default function WorkspaceShell() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [leaving, setLeaving] = useState(false)
+  const sessionPhase = useSyncExternalStore(subscribeSession, getSessionPhase)
+  const unsavedEditors = useRef(new Set())
+  const registerUnsavedChanges = useCallback(() => {
+    const editor = Symbol()
+    const editors = unsavedEditors.current
+    editors.add(editor)
+    return () => editors.delete(editor)
+  }, [])
   const triggerRef = useRef(null),
     sidebarRef = useRef(null)
   const [mobile, setMobile] = useState(
@@ -94,11 +121,7 @@ export default function WorkspaceShell() {
       try {
         const restored = await restoreSession()
         if (!active) return
-        if (restored) {
-          if (active) {
-            setUser(restored)
-          }
-        }
+        if (restored && canRestoreSession()) setUser(restored)
       } catch (cause) {
         if (active)
           setError(
@@ -114,12 +137,45 @@ export default function WorkspaceShell() {
       active = false
     }
   }, [])
-  async function leaveWorkspace() {
-    try {
-      await signOut()
-    } finally {
-      navigate('/login', { replace: true })
+  useEffect(() => {
+    if (sessionPhase === 'signed-out' || leaving) {
+      navigate('/login', {
+        replace: true,
+        state: { signedOut: sessionPhase === 'signed-out' },
+      })
     }
+  }, [leaving, navigate, sessionPhase])
+
+  function retrySignOut(scope) {
+    const action = scope === 'all' ? signOutAll : signOut
+    void action().catch(() => {})
+  }
+
+  function leaveWorkspace(scope) {
+    if (!canRestoreSession()) return false
+    if (
+      unsavedEditors.current.size &&
+      !window.confirm(
+        'You have unsaved changes. Signing out will discard them. Sign out anyway?',
+      )
+    )
+      return false
+    retrySignOut(scope)
+    return true
+  }
+
+  const sessionDialog = ['signing-out', 'logout-failed', 'expired'].includes(
+    sessionPhase,
+  ) && (
+    <SessionStatusDialog
+      phase={sessionPhase}
+      onRetry={() => retrySignOut()}
+      onSignIn={() => setLeaving(true)}
+    />
+  )
+  if (leaving || sessionPhase === 'signed-out') return null
+  if (sessionPhase === 'expired' || (!user && sessionDialog)) {
+    return <main className="workspace-gate">{sessionDialog}</main>
   }
   if (loading)
     return (
@@ -159,6 +215,7 @@ export default function WorkspaceShell() {
         user,
         error,
         signOut: leaveWorkspace,
+        registerUnsavedChanges,
         organizationScope: coordinatorView ? { ...scope, managed: true } : null,
       }}
     >
@@ -313,15 +370,11 @@ export default function WorkspaceShell() {
               </label>
             )}
             <div className="workspace-topbar-actions">
-              <Link
-                to={scoped('/app/account')}
-                className="workspace-account-link"
-              >
-                <span className="workspace-avatar">
-                  {user.display_name.slice(0, 1).toUpperCase()}
-                </span>
-                <span>{user.display_name}</span>
-              </Link>
+              <WorkspaceAccountMenu
+                user={user}
+                accountPath={scoped('/app/account')}
+                onSignOut={leaveWorkspace}
+              />
             </div>
           </header>
           <main className="workspace-content" id="main-content">
@@ -341,6 +394,7 @@ export default function WorkspaceShell() {
           </main>
         </div>
       </div>
+      {sessionDialog}
     </WorkspaceContext.Provider>
   )
 }

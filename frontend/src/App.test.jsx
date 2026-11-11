@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -6,12 +7,134 @@ import {
   within,
   waitFor,
 } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './app/App'
+import WorkspaceShell from './features/workspace/components/WorkspaceShell'
+import useUnsavedChanges from './features/workspace/hooks/useUnsavedChanges'
 import { clearAccessToken, setAccessToken } from './shared/api/client'
 afterEach(() => {
   cleanup()
   clearAccessToken()
+  vi.unstubAllGlobals()
+  window.history.replaceState({}, '', '/')
+})
+
+it('keeps a failed sign-out in the workspace and only opens sign-in after a confirmed retry', async () => {
+  window.history.replaceState({}, '', '/app/account')
+  setAccessToken('session')
+  const first = Promise.withResolvers()
+  const user = {
+    id: 'student',
+    display_name: 'Disposable Student',
+    account_type: 'student',
+  }
+  let logoutCalls = 0
+  const fetchMock = vi.fn(async (input) => {
+    const path = String(input)
+    if (path.endsWith('/me')) return Response.json(user)
+    if (path.endsWith('/auth/logout')) {
+      logoutCalls++
+      return logoutCalls === 1
+        ? first.promise
+        : new Response(null, { status: 204 })
+    }
+    return Response.json([])
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<App />)
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Account options' }),
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out', exact: true }))
+  expect(
+    await screen.findByRole('dialog', { name: /Signing out/i }),
+  ).toBeInTheDocument()
+  first.resolve(new Response(null, { status: 500 }))
+  expect(
+    await screen.findByRole('dialog', { name: /couldn’t confirm sign-out/i }),
+  ).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/app/account')
+  fireEvent.click(screen.getByRole('button', { name: 'Retry sign out' }))
+  await waitFor(() => expect(window.location.pathname).toBe('/login'))
+  expect(logoutCalls).toBe(2)
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/refresh')),
+  ).toBe(false)
+})
+
+it('cancels sign-out without touching a dirty draft and prompts only once on confirmed departure', async () => {
+  setAccessToken('session')
+  const user = {
+    id: 'coordinator',
+    display_name: 'Disposable Coordinator',
+    account_type: 'coordinator',
+  }
+  const logout = vi.fn(() => new Response(null, { status: 204 }))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input) => {
+      const path = String(input)
+      if (path.endsWith('/me')) return Response.json(user)
+      if (path.endsWith('/auth/logout')) return logout()
+      return Response.json([])
+    }),
+  )
+  function Draft() {
+    const [text, setText] = useState('Saved draft')
+    useUnsavedChanges(text !== 'Saved draft')
+    return (
+      <input
+        aria-label="Draft topic"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+      />
+    )
+  }
+  const confirm = vi
+    .spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true)
+  try {
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/app',
+          element: <WorkspaceShell />,
+          children: [{ path: 'coordinator/draft', element: <Draft /> }],
+        },
+        { path: '/login', element: <h1>Sign in again</h1> },
+      ],
+      { initialEntries: ['/app/coordinator/draft'] },
+    )
+    render(<RouterProvider router={router} />)
+    const topic = await screen.findByRole('textbox', { name: 'Draft topic' })
+    fireEvent.change(topic, { target: { value: 'My unsaved edit' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Account options' }))
+    const signOut = screen.getByRole('button', {
+      name: 'Sign out',
+      exact: true,
+    })
+    fireEvent.click(signOut)
+    expect(topic).toHaveValue('My unsaved edit')
+    expect(logout).not.toHaveBeenCalled()
+    expect(router.state.location.pathname).toBe('/app/coordinator/draft')
+
+    fireEvent.click(signOut)
+    expect(
+      await screen.findByRole('heading', { name: 'Sign in again' }),
+    ).toBeVisible()
+    expect(logout).toHaveBeenCalledOnce()
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(
+      screen.queryByRole('textbox', { name: 'Draft topic' }),
+    ).not.toBeInTheDocument()
+    await act(() => router.navigate('/app/coordinator/draft'))
+    expect(router.state.location.pathname).toBe('/login')
+  } finally {
+    confirm.mockRestore()
+  }
 })
 describe('Outpost landing page', () => {
   it('introduces the learning-to-career pathway and its main sections', () => {

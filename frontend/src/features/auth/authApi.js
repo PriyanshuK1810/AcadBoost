@@ -1,13 +1,12 @@
 import {
   apiRequest,
-  clearAccessToken,
-  hasAccessToken,
-  setAccessToken,
+  authenticateSession,
+  endAuthSession,
+  restoreAuthSession,
 } from '../../shared/api/client'
 export function dashboardPath(accountType) {
   return accountType === 'coordinator' ? '/app/coordinator' : '/app/student'
 }
-let pendingRestore = null
 export function currentUser() {
   return apiRequest('/me')
 }
@@ -17,21 +16,8 @@ export async function registerWithPassword(input) {
     body: JSON.stringify(input),
   })
 }
-async function acceptToken(result) {
-  setAccessToken(result.access_token)
-  try {
-    return await currentUser()
-  } catch (error) {
-    clearAccessToken()
-    throw error
-  }
-}
-export async function signInWithPassword(identifier, password) {
-  const result = await apiRequest('/auth/password/login', {
-    method: 'POST',
-    body: JSON.stringify({ identifier, password }),
-  })
-  return acceptToken(result)
+export function signInWithPassword(identifier, password) {
+  return authenticateSession('/auth/password/login', { identifier, password })
 }
 export async function requestPhoneCode(phone) {
   await apiRequest('/auth/phone/request', {
@@ -39,52 +25,17 @@ export async function requestPhoneCode(phone) {
     body: JSON.stringify({ phone }),
   })
 }
-export async function verifyPhoneCode(phone, code) {
-  const result = await apiRequest('/auth/phone/verify', {
-    method: 'POST',
-    body: JSON.stringify({ phone, code }),
-  })
-  return acceptToken(result)
+export function verifyPhoneCode(phone, code) {
+  return authenticateSession('/auth/phone/verify', { phone, code })
 }
-export async function restoreSession() {
-  if (pendingRestore) return pendingRestore
-  pendingRestore = (async () => {
-    try {
-      if (hasAccessToken()) {
-        try {
-          return await currentUser()
-        } catch {
-          clearAccessToken()
-        }
-      }
-      const result = await apiRequest('/auth/refresh', {
-        method: 'POST',
-      })
-      return await acceptToken(result)
-    } catch {
-      clearAccessToken()
-      return null
-    }
-  })()
-  try {
-    return await pendingRestore
-  } finally {
-    pendingRestore = null
-  }
+export function restoreSession() {
+  return restoreAuthSession()
 }
-export async function signOut() {
-  try {
-    if (hasAccessToken()) await apiRequest('/auth/logout', { method: 'POST' })
-  } finally {
-    clearAccessToken()
-  }
+export function signOut() {
+  return endAuthSession()
 }
-export async function signOutAll() {
-  try {
-    await apiRequest('/auth/logout-all', { method: 'POST' })
-  } finally {
-    clearAccessToken()
-  }
+export function signOutAll() {
+  return endAuthSession('all')
 }
 export function getSessions() {
   return apiRequest('/auth/sessions')

@@ -1,6 +1,9 @@
-import { useEffect } from 'react'
+import { useContext, useEffect } from 'react'
 import { useBlocker } from 'react-router'
+import { WorkspaceContext } from './useWorkspace'
 export default function useUnsavedChanges(dirty) {
+  const registerUnsavedChanges =
+    useContext(WorkspaceContext)?.registerUnsavedChanges
   useBlocker(
     ({ currentLocation, nextLocation }) =>
       dirty &&
@@ -10,6 +13,7 @@ export default function useUnsavedChanges(dirty) {
   )
   useEffect(() => {
     if (!dirty) return
+    const unregister = registerUnsavedChanges?.()
     const unload = (e) => {
       e.preventDefault()
       e.returnValue = ''
@@ -17,6 +21,7 @@ export default function useUnsavedChanges(dirty) {
     window.addEventListener('beforeunload', unload)
     return () => {
       window.removeEventListener('beforeunload', unload)
+      unregister?.()
     }
-  }, [dirty])
+  }, [dirty, registerUnsavedChanges])
 }

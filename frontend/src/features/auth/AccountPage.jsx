@@ -1,10 +1,5 @@
 import { useEffect, useState } from 'react'
-import {
-  getSessions,
-  requestEmailVerification,
-  revokeSession,
-  signOutAll,
-} from './authApi'
+import { getSessions, requestEmailVerification, revokeSession } from './authApi'
 import { useWorkspace } from '../workspace/hooks/useWorkspace'
 import {
   PageHeading,
@@ -68,22 +63,6 @@ export default function AccountPage() {
         cause instanceof Error
           ? cause.message
           : 'Unable to revoke this session.',
-      )
-    } finally {
-      setBusy('')
-    }
-  }
-  async function logOutEverywhere() {
-    setBusy('all')
-    setError('')
-    try {
-      await signOutAll()
-      window.location.assign('/login')
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Unable to sign out all sessions.',
       )
     } finally {
       setBusy('')
@@ -206,9 +185,9 @@ export default function AccountPage() {
           <button
             type="button"
             disabled={Boolean(busy)}
-            onClick={() => void logOutEverywhere()}
+            onClick={() => signOut('all')}
           >
-            {busy === 'all' ? 'Signing out…' : 'Sign out all'}
+            Sign out all
           </button>
         </div>
       </section>
