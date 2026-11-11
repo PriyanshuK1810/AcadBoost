@@ -1,22 +1,21 @@
+import { Link } from 'react-router'
 import AuthLayout from './AuthLayout'
-import { PRODUCT_BRAND } from '../../app/brand'
+import AuthMethodNav from './AuthMethodNav'
+
 export default function GoogleLoginPage() {
   return (
     <AuthLayout
-      eyebrow="Google sign in"
+      eyebrow="Sign-in methods"
       title="Continue with Google"
-      intro={`This sign-in method needs an OAuth client configured for this ${PRODUCT_BRAND} installation.`}
+      intro="Choose another method to access your Acadboost account."
     >
+      <AuthMethodNav current="Google" />
       <div className="auth-method-note">
-        <h3>Setup in progress</h3>
-        <p>
-          The backend can validate Google sign-in, but the frontend callback and
-          local OAuth configuration are not yet connected. Use password or phone
-          sign in for the current review.
-        </p>
+        <h2>Google sign-in is unavailable</h2>
+        <p>You can still sign in with your password or request a phone code.</p>
       </div>
       <p className="auth-switch">
-        <a href="/login">Back to password sign in</a>
+        <Link to="/login">Use password instead</Link>
       </p>
     </AuthLayout>
   )

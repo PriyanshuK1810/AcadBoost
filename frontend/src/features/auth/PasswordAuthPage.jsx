@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import BrandWordmark from '../../app/BrandWordmark'
+import AuthMethodNav from './AuthMethodNav'
+import ForestLandscapeArtwork from '../workspace/components/ForestLandscapeArtwork'
 import { PRODUCT_BRAND } from '../../app/brand'
 import {
   ApiRequestError,
@@ -96,6 +98,7 @@ export default function PasswordAuthPage({ mode }) {
       </header>
       <div className="auth-layout page-container">
         <aside className="auth-story">
+          <ForestLandscapeArtwork variant="auth" />
           <p className="eyebrow eyebrow-light">
             Learning today, brighter tomorrows
           </p>
@@ -123,6 +126,7 @@ export default function PasswordAuthPage({ mode }) {
               ? `Choose your account type and start your ${PRODUCT_BRAND} journey.`
               : 'Pick up where your learning journey left off.'}
           </p>
+          {!isRegistration && <AuthMethodNav current="Password" />}
           {registered && (
             <p className="form-message" role="status">
               Account created. Sign in with your new credentials to continue.
@@ -271,8 +275,6 @@ export default function PasswordAuthPage({ mode }) {
           {!isRegistration && (
             <div className="auth-method-links">
               <a href="/auth/forgot-password">Forgot password?</a>
-              <a href="/auth/phone">Use phone code</a>
-              <a href="/auth/google">Google sign in</a>
             </div>
           )}
           <p className="auth-switch">

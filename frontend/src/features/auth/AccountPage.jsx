@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getSessions, requestEmailVerification, revokeSession } from './authApi'
 import { useWorkspace } from '../workspace/hooks/useWorkspace'
 import {
@@ -12,6 +12,8 @@ export default function AccountPage() {
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [verificationRequested, setVerificationRequested] = useState(false)
+  const verificationPending = useRef(false)
   useEffect(() => {
     let active = true
     void getSessions()
@@ -32,22 +34,25 @@ export default function AccountPage() {
     }
   }, [])
   async function verifyEmail() {
-    if (!user.primary_email) return
+    if (!user.primary_email || busy || verificationPending.current) return
+    verificationPending.current = true
     setBusy('verify')
     setError('')
     setMessage('')
     try {
       await requestEmailVerification(user.primary_email)
+      setVerificationRequested(true)
       setMessage(
-        'If verification is needed, a link has been sent to your email address.',
+        'Verification request accepted. Check your inbox and spam folder. Your address stays unverified until you complete the link.',
       )
     } catch (cause) {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Unable to request verification.',
+        cause?.status === 429
+          ? 'Too many requests. Wait before requesting another verification link.'
+          : 'We couldn’t confirm the verification request. Check your inbox before trying again.',
       )
     } finally {
+      verificationPending.current = false
       setBusy('')
     }
   }
@@ -113,7 +118,11 @@ export default function AccountPage() {
               disabled={Boolean(busy)}
               onClick={() => void verifyEmail()}
             >
-              {busy === 'verify' ? 'Sending…' : 'Send verification email'}
+              {busy === 'verify'
+                ? 'Requesting…'
+                : verificationRequested
+                  ? 'Request another verification email'
+                  : 'Send verification email'}
             </button>
           )}
         </section>

@@ -1,4 +1,5 @@
 import BrandWordmark from '../../app/BrandWordmark'
+import ForestLandscapeArtwork from '../workspace/components/ForestLandscapeArtwork'
 
 export default function AuthLayout({ eyebrow, title, intro, children }) {
   return (
@@ -11,6 +12,7 @@ export default function AuthLayout({ eyebrow, title, intro, children }) {
       </header>
       <div className="auth-layout page-container">
         <aside className="auth-story">
+          <ForestLandscapeArtwork variant="auth" />
           <p className="eyebrow eyebrow-light">Your journey, your account</p>
           <h2>Keep your next step within reach.</h2>
           <p>
