@@ -31,6 +31,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(useWorkspace).mockReturnValue({
     user: { id: 'owner-1', account_type: 'coordinator' },
+    organizationScope: {
+      organizations: [{ id: 'org-1', name: 'Campus', role: 'owner' }],
+      loading: false,
+      retry: vi.fn(),
+    },
   })
   vi.mocked(learningApi.listOrganizations).mockResolvedValue([
     { id: 'org-1', name: 'Campus', role: 'owner' },
@@ -175,6 +180,11 @@ it('keeps the confirmed invitation when the follow-up list refresh fails', async
 })
 
 it('discards a late one-time invitation and its follow-up read after leaving the organization', async () => {
+  const workspace = useWorkspace()
+  workspace.organizationScope.organizations = [
+    { id: 'a', name: 'Campus a', role: 'owner' },
+    { id: 'b', name: 'Campus b', role: 'owner' },
+  ]
   const delayed = Promise.withResolvers()
   learningApi.createOrganizationInvitation.mockReturnValue(delayed.promise)
   learningApi.getOrganization.mockImplementation(async (id) => ({
@@ -269,6 +279,59 @@ it('links an owner to organization management', async () => {
     await screen.findByRole('link', { name: /manage organization/i }),
   ).toHaveAttribute('href', '/app/organizations/org-1')
 })
+
+it('links a Mentor membership to its own workspace without offering governance', () => {
+  const workspace = useWorkspace()
+  const membership = { id: 'org-1', name: 'Campus', role: 'mentor' }
+  workspace.organizationScope.organization = membership
+  workspace.organizationScope.organizations = [membership]
+  render(
+    <MemoryRouter initialEntries={['/app/organizations']}>
+      <OrganizationsPage />
+    </MemoryRouter>,
+  )
+  expect(screen.getByText('Mentor membership')).toBeVisible()
+  expect(
+    screen.getByRole('link', { name: /open mentor workspace/i }),
+  ).toHaveAttribute('href', '/app/coordinator/learning?organizationId=org-1')
+  expect(
+    screen.queryByRole('link', { name: /manage organization/i }),
+  ).not.toBeInTheDocument()
+})
+
+it.each(['admin', 'coordinator', 'mentor', 'student', null])(
+  'does not load Owner-only data through a direct link for role %s',
+  async (role) => {
+    vi.mocked(useWorkspace).mockReturnValue({
+      user: {
+        id: 'viewer',
+        account_type: role === 'student' ? 'student' : 'coordinator',
+      },
+      organizationScope: {
+        organizations: [
+          { id: 'other-org', name: 'Other campus', role: 'owner' },
+          ...(role ? [{ id: 'org-1', name: 'Campus', role }] : []),
+        ],
+      },
+    })
+    render(
+      <MemoryRouter initialEntries={['/app/organizations/org-1']}>
+        <Routes>
+          <Route
+            path="/app/organizations/:organizationId"
+            element={<OrganizationDetailPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(
+      await screen.findByRole('heading', { name: 'Owner access required' }),
+    ).toBeVisible()
+    expect(learningApi.getOrganization).not.toHaveBeenCalled()
+    expect(learningApi.listOrganizationMembers).not.toHaveBeenCalled()
+    expect(learningApi.listOrganizationInvitations).not.toHaveBeenCalled()
+  },
+)
 
 it('shows an owner the member directory without credential fields', async () => {
   render(

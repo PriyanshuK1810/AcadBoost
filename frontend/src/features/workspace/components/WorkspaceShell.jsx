@@ -34,6 +34,7 @@ import {
   withOrganization,
 } from '../hooks/useOrganizationScope'
 import ForestLandscapeArtwork from './ForestLandscapeArtwork'
+import { PageHeading } from './WorkspaceUI'
 const studentLinks = [
   { to: '/app/student', label: 'Overview', end: true },
   { to: '/app/student/learning', label: 'My cohorts' },
@@ -51,6 +52,16 @@ const coordinatorLinks = [
   { to: '/app/coordinator/topic-statistics', label: 'Topic statistics' },
   { to: '/app/coordinator/at-risk', label: 'Student support' },
 ]
+const mentorLinks = [
+  { to: '/app/coordinator', label: 'Mentor overview', end: true },
+  { to: '/app/organizations', label: 'Your organizations' },
+]
+const roleLabels = {
+  owner: 'Owner',
+  admin: 'Admin',
+  coordinator: 'Coordinator',
+  mentor: 'Mentor',
+}
 export default function WorkspaceShell() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -200,6 +211,22 @@ export default function WorkspaceShell() {
       </main>
     )
   const home = dashboardPath(user.account_type)
+  const mentorView = coordinatorView && organization?.role === 'mentor'
+  const roleLabel = coordinatorView
+    ? (roleLabels[organization?.role] ?? 'Coordinator')
+    : 'Student'
+  const links = mentorView
+    ? mentorLinks
+    : coordinatorView
+      ? coordinatorLinks
+      : studentLinks
+  const staffRoute = location.pathname.startsWith('/app/coordinator')
+  const organizationBreadcrumb =
+    location.pathname === '/app/organizations'
+      ? 'Your organizations'
+      : location.pathname.startsWith('/app/organizations/')
+        ? 'Organization management'
+        : null
   const scoped = (path) =>
     coordinatorView ? withOrganization(path, organization?.id) : path
   if (
@@ -273,16 +300,12 @@ export default function WorkspaceShell() {
               →
             </Link>
           </div>
-          <div className="workspace-view-switch" aria-label="Account type">
-            <span className="is-selected">
-              {coordinatorView ? 'Coordinator' : 'Student'}
-            </span>
+          <div className="workspace-view-switch" aria-label="Workspace role">
+            <span className="is-selected">{roleLabel}</span>
           </div>
           <nav className="workspace-nav" aria-label="Primary">
-            <p className="workspace-nav-heading">
-              {coordinatorView ? 'Coordinator' : 'Student'}
-            </p>
-            {(coordinatorView ? coordinatorLinks : studentLinks).map((item) => (
+            <p className="workspace-nav-heading">{roleLabel}</p>
+            {links.map((item) => (
               <NavLink
                 key={item.to}
                 to={scoped(item.to)}
@@ -328,9 +351,11 @@ export default function WorkspaceShell() {
               </button>
               <span className="workspace-breadcrumb">
                 Workspace <span>/</span>{' '}
-                {(coordinatorView ? coordinatorLinks : studentLinks).find(
-                  (item) => item.to === location.pathname,
-                )?.label ||
+                {(staffRoute && mentorView
+                  ? 'Mentor workspace'
+                  : links.find((item) => item.to === location.pathname)
+                      ?.label) ||
+                  organizationBreadcrumb ||
                   (location.pathname.includes('activity-plans')
                     ? 'Activity plan'
                     : location.pathname.includes('versions')
@@ -390,7 +415,43 @@ export default function WorkspaceShell() {
                 </button>
               </div>
             )}
-            <Outlet />
+            {staffRoute && scope.loading ? (
+              <p role="status">Loading organization access…</p>
+            ) : staffRoute && scope.error ? (
+              <div className="workspace-alert">
+                <p role="alert">{scope.error}</p>
+                <button
+                  type="button"
+                  className="workspace-button workspace-button-outline"
+                  onClick={scope.retry}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : staffRoute && mentorView ? (
+              <>
+                <PageHeading
+                  eyebrow="Workspace / Mentoring"
+                  title="Mentor workspace"
+                  description={organization.name}
+                />
+                <section
+                  className="workspace-card"
+                  aria-labelledby="mentor-access-title"
+                >
+                  <h2 id="mentor-access-title">
+                    Assigned-cohort access is unavailable
+                  </h2>
+                  <p>
+                    Your Mentor membership is active. Acadboost does not
+                    currently provide access to assigned cohorts or learner
+                    progress for this role.
+                  </p>
+                </section>
+              </>
+            ) : (
+              <Outlet />
+            )}
           </main>
         </div>
       </div>

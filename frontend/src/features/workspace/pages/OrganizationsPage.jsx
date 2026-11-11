@@ -4,6 +4,15 @@ import { useWorkspace } from '../hooks/useWorkspace'
 import { withOrganization } from '../hooks/useOrganizationScope'
 import { acceptOrganizationInvitation, listOrganizations } from '../learningApi'
 import { EmptyState, PageHeading } from '../components/WorkspaceUI'
+
+const membershipLabels = {
+  owner: 'Owner',
+  admin: 'Admin',
+  coordinator: 'Coordinator',
+  mentor: 'Mentor',
+  student: 'Student',
+}
+
 export default function OrganizationsPage() {
   const { user, organizationScope } = useWorkspace()
   const usesWorkspaceMemberships = Boolean(organizationScope)
@@ -69,18 +78,20 @@ export default function OrganizationsPage() {
         title="Your organizations"
         description="Organizations appear here when you create one or join a coordinator's cohort."
         action={
-          <Link
-            className="workspace-button"
-            to={withOrganization(
-              destination,
-              organizationScope?.organization?.id,
-            )}
-          >
-            {user.account_type === 'coordinator'
-              ? 'Create organization'
-              : 'Join a cohort'}{' '}
-            →
-          </Link>
+          organizationScope?.organization?.role !== 'mentor' && (
+            <Link
+              className="workspace-button"
+              to={withOrganization(
+                destination,
+                organizationScope?.organization?.id,
+              )}
+            >
+              {user.account_type === 'coordinator'
+                ? 'Create organization'
+                : 'Join a cohort'}{' '}
+              →
+            </Link>
+          )
         }
       />
       {directoryLoading && <p role="status">Loading organizations…</p>}
@@ -141,12 +152,7 @@ export default function OrganizationsPage() {
             <div className="workspace-entity-icon">O</div>
             <div className="workspace-entity-body">
               <p className="workspace-card-label">
-                {organization.role === 'owner'
-                  ? 'Owner'
-                  : organization.role === 'student'
-                    ? 'Student'
-                    : 'Staff'}{' '}
-                membership
+                {membershipLabels[organization.role] ?? 'Staff'} membership
               </p>
               <h2>{organization.name}</h2>
               {organization.role === 'owner' && (
@@ -157,8 +163,14 @@ export default function OrganizationsPage() {
                   Manage organization →
                 </Link>
               )}
-              {organization.role === 'owner' ||
-              organization.role === 'student' ? (
+              {organization.role === 'mentor' ? (
+                <Link
+                  className="workspace-text-link"
+                  to={withOrganization(destination, organization.id)}
+                >
+                  Open Mentor workspace →
+                </Link>
+              ) : (
                 <Link
                   className="workspace-text-link"
                   to={withOrganization(
@@ -168,11 +180,6 @@ export default function OrganizationsPage() {
                 >
                   Open learning workspace →
                 </Link>
-              ) : (
-                <p>
-                  Staff membership active. Workspace permissions are being
-                  prepared.
-                </p>
               )}
             </div>
           </article>

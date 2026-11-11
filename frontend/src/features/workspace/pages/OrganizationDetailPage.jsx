@@ -14,6 +14,37 @@ import { PageHeading } from '../components/WorkspaceUI'
 
 export default function OrganizationDetailPage() {
   const { organizationId } = useParams()
+  const { organizationScope } = useWorkspace()
+  if (organizationScope?.loading)
+    return <p role="status">Checking organization access…</p>
+  if (organizationScope?.error)
+    return (
+      <div className="workspace-card">
+        <p role="alert">{organizationScope.error}</p>
+        <button className="workspace-button" onClick={organizationScope.retry}>
+          Retry
+        </button>
+      </div>
+    )
+  const canManage = organizationScope?.organizations.some(
+    ({ id, role }) => id === organizationId && role === 'owner',
+  )
+  if (!canManage)
+    return (
+      <PageHeading
+        eyebrow="Workspace / Organizations"
+        title="Owner access required"
+        description="Only an active Owner of this organization can manage its members and staff invitations."
+        action={
+          <Link
+            className="workspace-button workspace-button-outline"
+            to="/app/organizations"
+          >
+            Back to organizations
+          </Link>
+        }
+      />
+    )
   return (
     <OrganizationDetails key={organizationId} organizationId={organizationId} />
   )
@@ -169,7 +200,7 @@ function OrganizationDetails({ organizationId }) {
       <PageHeading
         eyebrow="Workspace / Organizations"
         title={visibleOrganization?.name ?? 'Organization'}
-        description="Manage membership and staff invitations for this organization."
+        description="Organization management · Owner access"
         action={
           <Link
             className="workspace-button workspace-button-outline"
@@ -192,11 +223,27 @@ function OrganizationDetails({ organizationId }) {
       )}
       {!loading && visibleOrganization && (
         <>
+          <nav
+            className="learning-actions"
+            aria-label="Organization management"
+          >
+            <a
+              className="workspace-text-link"
+              href="#organization-members-title"
+            >
+              Members
+            </a>
+            <a className="workspace-text-link" href="#staff-invitations-title">
+              Staff invitations
+            </a>
+          </nav>
           <section
             className="workspace-card"
             aria-labelledby="organization-members-title"
           >
-            <h2 id="organization-members-title">Members</h2>
+            <h2 id="organization-members-title" tabIndex={-1}>
+              Members
+            </h2>
             {members.length === 0 ? (
               <p>No members are listed for this organization.</p>
             ) : (
@@ -273,7 +320,9 @@ function OrganizationDetails({ organizationId }) {
             className="workspace-card"
             aria-labelledby="staff-invitations-title"
           >
-            <h2 id="staff-invitations-title">Invite staff</h2>
+            <h2 id="staff-invitations-title" tabIndex={-1}>
+              Invite staff
+            </h2>
             <p>
               Codes expire after seven days. The recipient must use this email
               on a verified coordinator account.

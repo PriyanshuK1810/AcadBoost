@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   within,
   fireEvent,
@@ -131,6 +132,97 @@ it('shows the actual selected organization in the coordinator sidebar', async ()
 })
 afterEach(cleanup)
 
+it('replaces staff navigation and the outlet in a Mentor organization', async () => {
+  authApi.restoreSession.mockResolvedValue({
+    id: 'staff',
+    display_name: 'Staff member',
+    account_type: 'coordinator',
+  })
+  learningApi.listOrganizations.mockResolvedValue([
+    { id: 'owner-org', name: 'Owner campus', role: 'owner' },
+    { id: 'mentor-org', name: 'Mentor campus', role: 'mentor' },
+  ])
+  const reportOpened = vi.fn()
+  function Report() {
+    reportOpened()
+    return <h1>Cohort report</h1>
+  }
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/app/coordinator/learning/cohort-1?organizationId=mentor-org',
+      ]}
+    >
+      <Routes>
+        <Route path="/app" element={<WorkspaceShell />}>
+          <Route path="coordinator/learning/:cohortId" element={<Report />} />
+          <Route path="coordinator/learning" element={<h1>Live learning</h1>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  )
+  expect(
+    await screen.findByRole('heading', { name: 'Mentor workspace' }),
+  ).toBeVisible()
+  expect(reportOpened).not.toHaveBeenCalled()
+  expect(
+    screen.queryByRole('link', { name: 'Student progress' }),
+  ).not.toBeInTheDocument()
+  expect(
+    within(screen.getByRole('navigation', { name: 'Primary' })).getByRole(
+      'link',
+      { name: 'Your organizations' },
+    ),
+  ).toBeVisible()
+
+  fireEvent.change(screen.getByRole('combobox', { name: 'Organization' }), {
+    target: { value: 'owner-org' },
+  })
+  expect(
+    await screen.findByRole('heading', { name: 'Live learning' }),
+  ).toBeVisible()
+  expect(screen.getByRole('link', { name: 'Student progress' })).toBeVisible()
+  fireEvent.change(screen.getByRole('combobox', { name: 'Organization' }), {
+    target: { value: 'mentor-org' },
+  })
+  expect(
+    await screen.findByRole('heading', { name: 'Mentor workspace' }),
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('heading', { name: 'Live learning' }),
+  ).not.toBeInTheDocument()
+})
+
+it('holds the staff outlet closed when organization access cannot be loaded', async () => {
+  authApi.restoreSession.mockResolvedValue({
+    id: 'staff',
+    display_name: 'Staff member',
+    account_type: 'coordinator',
+  })
+  learningApi.listOrganizations.mockRejectedValueOnce(
+    new Error('Membership service unavailable'),
+  )
+  render(
+    <MemoryRouter initialEntries={['/app/coordinator']}>
+      <Routes>
+        <Route path="/app" element={<WorkspaceShell />}>
+          <Route path="coordinator" element={<h1>Staff overview</h1>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  )
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Membership service unavailable',
+  )
+  expect(
+    screen.queryByRole('heading', { name: 'Staff overview' }),
+  ).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(
+    await screen.findByRole('heading', { name: 'Staff overview' }),
+  ).toBeVisible()
+})
+
 function ScopedRoute() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -195,7 +287,10 @@ it('keeps the organization picker aligned with the draft while a switch is block
       ],
     },
   )
-  render(<RouterProvider router={router} />)
+  await act(async () => {
+    render(<RouterProvider router={router} />)
+  })
+  expect(await screen.findByLabelText('Draft text')).toHaveValue('Unsaved edit')
   const picker = await screen.findByRole('combobox', { name: 'Organization' })
   let valueDuringPrompt
   const confirm = vi.spyOn(window, 'confirm').mockImplementation(() => {
@@ -253,6 +348,9 @@ it('uses the organization detail path ahead of a conflicting query', async () =>
   expect(
     await screen.findByRole('combobox', { name: 'Organization' }),
   ).toHaveValue('org-1')
+  expect(
+    screen.getByText('Organization management', { exact: false }),
+  ).toBeVisible()
 })
 it('requires a signed-in account before loading workspace data', async () => {
   vi.mocked(authApi.restoreSession).mockResolvedValue(null)
