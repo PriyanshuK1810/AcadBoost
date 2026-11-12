@@ -46,6 +46,10 @@ describe.skipIf(!source)('T04-D historical curriculum API', () => {
       };
       evidence.before = await snapshot();
       await client.query(await readFile(new URL('20261108_roadmap_review/migration.sql', migrations), 'utf8'));
+      // The historical snapshot predates review. Run the current API with its
+      // additive auth schema after exercising that historical migration path.
+      await client.query(await readFile(new URL('20261113_m01b_r1_browser_auth_intents/migration.sql', migrations), 'utf8'));
+      expect(await snapshot()).toEqual(evidence.before);
       prisma = createPrismaClient(url.href);
       const settings = { env: 'test', authSigningKey: randomBytes(48).toString('base64url') };
       const app = createApp({ prisma, settings });

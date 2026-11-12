@@ -8,6 +8,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { errorHandler } from '../src/core/errors.js';
 import { registerGoogleRoutes } from '../src/modules/auth/google.js';
+import { registerAuthRoutes } from '../src/modules/auth/routes.js';
+import { BROWSER_CONTEXT_COOKIE, registerBrowserContextRoutes } from '../src/modules/auth/browserIntents.js';
 import { createValkeyClient } from '../src/core/valkey.js';
 
 const baseSettings = {
@@ -15,6 +17,8 @@ const baseSettings = {
   googleClientId: 'test-client.apps.googleusercontent.com',
   googleClientSecret: 'test-only-secret',
   googleRedirectUri: 'https://api.example.com/api/v1/auth/google/callback',
+  googleHandoffEnabled: true,
+  publicAppOrigin: 'https://api.example.com',
   authSigningKey: 'test-signing-key-with-at-least-thirty-two-bytes',
 };
 const discovery = {
@@ -26,6 +30,11 @@ const authorizePath = '/api/v1/auth/google/authorize';
 const callbackPath = '/api/v1/auth/google/callback';
 const cookieName = '__Secure-outpost_google_correlation';
 const stateKey = (state) => 'outpost:oauth-state:v1:' + state;
+const completePath = '/auth/google/complete';
+function expectCallback(response, result) {
+  expect(response.status).toBe(303);
+  expect(response.headers.location).toBe(result ? completePath + '?result=' + result : completePath);
+}
 let privateKey;
 let publicJwk;
 
@@ -39,18 +48,30 @@ function fakeRedis() {
   const values = new Map();
   return {
     values,
+    async ping() { return 'PONG'; },
     async set(key, value, options) {
       if (options.NX && values.has(key)) return null;
       values.set(key, { value, options });
       return 'OK';
     },
-    async eval(_script, { keys: [key], arguments: [proof] }) {
+    async eval(script, { keys: [key], arguments: args }) {
+      if (script.includes('INCR')) return 1;
       const entry = values.get(key);
       if (!entry) return null;
-      const record = JSON.parse(entry.value);
-      if (record.correlationDigest !== proof) return null;
-      values.delete(key);
-      return [record.nonce, record.codeVerifier];
+      let record;
+      try { record = JSON.parse(entry.value); } catch { return null; }
+      if (script.includes('record.correlationDigest')) {
+        if (record.correlationDigest !== args[0] || !record.attemptId ||
+            !/^[A-Za-z0-9_-]{43}$/.test(record.nonce ?? '') ||
+            !/^[A-Za-z0-9_-]{43}$/.test(record.codeVerifier ?? '')) return null;
+        values.delete(key);
+        return [record.nonce, record.codeVerifier, record.attemptId, record.contextId, record.intentId, record.generation];
+      }
+      if (record.attemptId !== args[0] || record.contextId !== args[1] || record.generation !== args[2] ||
+          record.expiresAt <= Number(args[3]) || !record.principal ||
+          typeof record.principal.subject !== 'string' || typeof record.principal.email !== 'string') return null;
+      if (args[4] === 'consume') values.delete(key);
+      return JSON.stringify(record);
     },
   };
 }
@@ -60,6 +81,8 @@ function fakePrisma() {
   const identities = [];
   const sessions = [];
   const events = [];
+  const browserContexts = [];
+  const intents = [];
   const prisma = {
     user: {
       async findUnique({ where }) { return users.find((user) => user.id === where.id) ?? null; },
@@ -72,7 +95,7 @@ function fakePrisma() {
         return user;
       },
     },
-    oauthIdentity: {
+    oAuthIdentity: {
       async findUnique({ where }) {
         const key = where.provider_providerSubject;
         return identities.find((row) => row.provider === key.provider && row.providerSubject === key.providerSubject) ?? null;
@@ -94,12 +117,69 @@ function fakePrisma() {
         sessions.push(row);
         return row;
       },
+      async findUnique({ where }) {
+        if (where.refreshTokenHash) return sessions.find((row) => row.refreshTokenHash === where.refreshTokenHash) ?? null;
+        return sessions.find((row) => row.id === where.id) ?? null;
+      },
+      async updateMany({ where, data }) {
+        const matches = sessions.filter((row) =>
+          (!where.tokenFamilyId || row.tokenFamilyId === where.tokenFamilyId) &&
+          (!where.userId || row.userId === where.userId) &&
+          (where.revokedAt === undefined || row.revokedAt === where.revokedAt));
+        for (const row of matches) Object.assign(row, data);
+        return { count: matches.length };
+      },
+    },
+    authBrowserContext: {
+      async create({ data }) {
+        const row = { id: randomUUID(), generation: 0n, retiredAt: null, ...data };
+        browserContexts.push(row);
+        return row;
+      },
+      async findUnique({ where }) { return browserContexts.find((row) => row.id === where.id) ?? null; },
+      async update({ where, data }) {
+        const row = browserContexts.find((item) => item.id === where.id);
+        Object.assign(row, data);
+        return row;
+      },
+    },
+    authBrowserIntent: {
+      async count() { return intents.length; },
+      async findUnique({ where, include }) {
+        const key = where.contextId_actionId;
+        const row = intents.find((row) => key ? row.contextId === key.contextId && row.actionId === key.actionId : row.id === where.id);
+        return include && row ? { ...row, context: browserContexts.find((item) => item.id === row.contextId) } : row ?? null;
+      },
+      async findFirst({ where }) {
+        return intents.find((row) => row.contextId === where.contextId && row.generation === where.generation
+          && row.kind === 'google' && row.activatedAt && !row.supersededAt) ?? null;
+      },
+      async create({ data }) {
+        const row = { id: randomUUID(), activatedAt: null, ...data };
+        intents.push(row);
+        return row;
+      },
+      async update({ where, data }) {
+        const row = intents.find((item) => item.id === where.id);
+        Object.assign(row, data);
+        return row;
+      },
     },
     securityEvent: { async create({ data }) { events.push(data); } },
-    async $queryRaw() { return []; },
+    async $queryRaw(query, value) {
+      const sql = query.join(' ');
+      if (sql.includes('WHERE binding_digest')) {
+        return browserContexts.filter((row) => Buffer.from(row.bindingDigest).equals(Buffer.from(value)));
+      }
+      if (sql.includes('decision_clock')) {
+        return browserContexts.filter((row) => row.id === value).map((row) => ({ ...row, now: new Date() }));
+      }
+      if (sql.includes('SELECT clock_timestamp() AS now')) return [{ now: new Date() }];
+      return [];
+    },
     async $transaction(callback) { return callback(prisma); },
   };
-  return { prisma, users, identities, sessions, events };
+  return { prisma, users, identities, sessions, events, intents };
 }
 
 async function signedToken(claims = {}) {
@@ -139,7 +219,10 @@ function fakeGoogle(sign = signedToken) {
 function appFor({ prisma, settings = baseSettings, redisClient, fetchImpl } = {}) {
   const app = express();
   app.use((_request, _response, next) => { _request.requestId = randomUUID(); next(); });
+  app.use(express.json());
   app.use(cookieParser());
+  registerAuthRoutes(app, { prisma, settings, redisClient });
+  registerBrowserContextRoutes(app, { prisma, settings, redisClient });
   registerGoogleRoutes(app, { prisma, settings, redisClient, fetchImpl });
   app.use(errorHandler);
   return app;
@@ -151,22 +234,52 @@ function browserFor(app) {
   const agent = request.agent(app);
   // Supertest uses HTTP. Track each simulated browser's Secure cookie separately.
   let proof;
+  let handoff;
+  let binding;
+  let contextId;
   const accept = (response) => {
     const header = correlationHeader(response);
     if (header) proof = header.split(';', 1)[0].slice(cookieName.length + 1) || undefined;
+    const handoffHeader = response.headers['set-cookie']?.find((cookie) => cookie.startsWith('__Secure-outpost_google_handoff='));
+    if (handoffHeader) handoff = handoffHeader.split(';', 1)[0].split('=', 2)[1] || undefined;
     return response;
   };
   return {
     get proof() { return proof; },
-    async start() {
-      const response = accept(await agent.get(authorizePath));
+    get handoff() { return handoff; },
+    async start(attempt = randomUUID()) {
+      if (!binding) {
+        const bootstrap = await agent.post('/api/v1/auth/browser-context')
+          .set('Origin', baseSettings.publicAppOrigin).set('X-Acadboost-Browser-Auth', '1').send({});
+        expect(bootstrap.status).toBe(200);
+        binding = bootstrap.headers['set-cookie'].find((cookie) => cookie.startsWith(BROWSER_CONTEXT_COOKIE + '=')).split(';', 1)[0];
+        contextId = bootstrap.body.context_id;
+      }
+      const intent = await agent.post('/api/v1/auth/google/intent')
+        .set('Origin', baseSettings.publicAppOrigin).set('X-Acadboost-Browser-Auth', '1')
+        .set('Cookie', binding).send({ context_id: contextId, attempt });
+      expect(intent.status).toBe(204);
+      const pending = agent.get(authorizePath).query({ attempt }).set('Sec-Fetch-Site', 'same-origin').set('Cookie', binding);
+      const response = accept(await pending);
       expect(response.status).toBe(302);
       const { searchParams } = new URL(response.headers.location);
-      return { state: searchParams.get('state'), nonce: searchParams.get('nonce'), response };
+      return { attempt, state: searchParams.get('state'), nonce: searchParams.get('nonce'), response };
     },
-    async callback(state, { code = 'one-time-code', iss = discovery.issuer, cookie = proof } = {}) {
-      const pending = agent.get(callbackPath).query({ state, code, iss });
+    async callback(state, { code = 'one-time-code', iss = discovery.issuer, error, cookie = proof } = {}) {
+      const query = { state, code, iss };
+      if (error) query.error = error;
+      const pending = agent.get(callbackPath).query(query);
       if (cookie) pending.set('Cookie', `${cookieName}=${cookie}`);
+      return accept(await pending);
+    },
+    async activate(attempt, credential = handoff, options = {}) {
+      const pending = agent.post('/api/v1/auth/refresh')
+        .set('Origin', options.origin ?? baseSettings.publicAppOrigin)
+        .set('X-Acadboost-Google-Attempt', options.attempt ?? attempt);
+      const cookies = [binding, credential && '__Secure-outpost_google_handoff=' + credential,
+        options.refreshCookie && 'outpost_refresh=' + options.refreshCookie].filter(Boolean);
+      if (cookies.length) pending.set('Cookie', cookies.join('; '));
+      if (options.body !== undefined) pending.send(options.body);
       return accept(await pending);
     },
   };
@@ -174,7 +287,7 @@ function browserFor(app) {
 
 function fixture({ redis = fakeRedis(), google = fakeGoogle(), db = fakePrisma() } = {}) {
   const app = appFor({ prisma: db.prisma, redisClient: redis, fetchImpl: google.fetch.bind(google) });
-  return { db, redis, google, browser: () => browserFor(app) };
+  return { app, db, redis, google, browser: () => browserFor(app) };
 }
 
 function expectNoAuthentication({ db, google }) {
@@ -191,6 +304,51 @@ function expectCorrelationCleared(response) {
 }
 
 describe('Google OAuth/OIDC routes', () => {
+  it('creates a short-lived handoff and activates it only through the guarded refresh mode', async () => {
+    const context = fixture();
+    const browser = context.browser();
+    const attemptId = randomUUID();
+    const { state, nonce } = await browser.start(attemptId);
+    context.google.nonce = nonce;
+
+    const callback = await browser.callback(state);
+
+    expect(callback.status).toBe(303);
+    expect(callback.headers.location).toBe('/auth/google/complete');
+    expect(callback.headers['referrer-policy']).toBe('no-referrer');
+    expect(callback.text).not.toContain('access_token');
+    expect(callback.text).not.toContain('one-time-code');
+    expect(callback.headers['set-cookie'].some((cookie) => cookie.startsWith('outpost_refresh='))).toBe(false);
+    expect(context.db.sessions).toHaveLength(0);
+    expect(context.db.users).toHaveLength(0);
+    const handoffHeader = callback.headers['set-cookie'].find((cookie) => cookie.startsWith('__Secure-outpost_google_handoff='));
+    expect(handoffHeader).toBeTruthy();
+    const handoffAttrs = handoffHeader.split('; ').slice(1);
+    expect(handoffAttrs).toEqual(expect.arrayContaining([
+      'Path=/api/v1/auth/refresh', 'Max-Age=120', 'HttpOnly', 'Secure', 'SameSite=Strict',
+    ]));
+    const handoff = handoffHeader.split(';', 1)[0].split('=', 2)[1];
+    const raw = context.redis.values.get('outpost:google-handoff:v1:' + createHash('sha256').update(handoff).digest('hex'));
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw.value)).toMatchObject({ attemptId, principal: { subject: 'stable-google-subject', email: 'person@example.com' } });
+    expect(raw.options).toEqual({ EX: 120, NX: true });
+
+    const activated = await browser.activate(attemptId, handoff);
+
+    expect(activated.status).toBe(200);
+    expect(activated.body).toMatchObject({ token_type: 'bearer', expires_in: 900 });
+    expect(activated.body.access_token).toBeTruthy();
+    expect(activated.headers['set-cookie'].some((cookie) => cookie.startsWith('outpost_refresh='))).toBe(true);
+    expect(activated.headers['set-cookie'].some((cookie) => cookie.startsWith('__Secure-outpost_google_handoff=;'))).toBe(true);
+    expect(context.db.users).toHaveLength(1);
+    expect(context.db.identities).toHaveLength(1);
+    expect(context.db.sessions).toHaveLength(1);
+    expect(context.db.events).toHaveLength(1);
+    expect(context.db.sessions[0]).toMatchObject({
+      browserIntentId: context.db.intents[0].id, tokenFamilyId: context.db.intents[0].tokenFamilyId,
+    });
+  });
+
   it('denies a copied callback before provider or database work and preserves the initiating attempt', async () => {
     const context = fixture();
     const browserA = context.browser();
@@ -201,13 +359,39 @@ describe('Google OAuth/OIDC routes', () => {
 
     const denied = await browserB.callback(attempt.state);
 
-    expect(denied.status).toBe(401);
+    expectCallback(denied, 'invalid');
     expect(correlationHeader(denied)).toBeUndefined();
     expectNoAuthentication(context);
     expect(context.redis.values.has(stateKey(attempt.state))).toBe(true);
     expect(context.redis.values.has(stateKey(otherAttempt.state))).toBe(true);
-    expect((await browserA.callback(attempt.state)).status).toBe(200);
+    expectCallback(await browserA.callback(attempt.state));
+    expect(context.db.sessions).toHaveLength(0);
+    expect((await browserA.activate(attempt.attempt)).status).toBe(200);
     expect(context.db.sessions).toHaveLength(1);
+  });
+
+  it('keeps a valid grant and existing session intact on conflict and rejects wrong selectors first', async () => {
+    const context = fixture();
+    const browser = context.browser();
+    const { state, nonce, attempt } = await browser.start();
+    context.google.nonce = nonce;
+    expectCallback(await browser.callback(state));
+    const owner = await context.db.prisma.user.create({ data: { displayName: 'Existing account' } });
+    const refresh = randomBytes(32).toString('base64url');
+    const control = await context.db.prisma.authSession.create({ data: {
+      id: randomUUID(), userId: owner.id, tokenFamilyId: randomUUID(), expiresAt: new Date(Date.now() + 600_000),
+      refreshTokenHash: createHash('sha256').update(refresh).digest('hex'),
+    } });
+    const pending = browser.handoff;
+    const invalid = await browser.activate(attempt, pending, { refreshCookie: refresh, attempt: randomUUID() });
+    expect(invalid.status).toBe(401);
+    const conflict = await browser.activate(attempt, pending, { refreshCookie: refresh });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error.code).toBe('session_conflict');
+    expect(conflict.headers['set-cookie']).toBeUndefined();
+    expect(control.revokedAt).toBeNull();
+    expect(context.db.sessions).toHaveLength(1);
+    expect((await browser.activate(attempt, pending)).status).toBe(200);
   });
 
   it('starts no-store authorization with a callback-only cookie, a digest, nonce and S256 PKCE', async () => {
@@ -248,7 +432,7 @@ describe('Google OAuth/OIDC routes', () => {
     const missingCredentials = await request(appFor({ settings: {}, redisClient: fakeRedis() })).get(authorizePath);
     expect(missingCredentials.status).toBe(503);
     expect(missingCredentials.body.error.message).toBe('Google authentication is not configured');
-    expect((await request(appFor({ settings: {}, redisClient: fakeRedis() })).get(callbackPath)).status).toBe(503);
+    expectCallback(await request(appFor({ settings: {}, redisClient: fakeRedis() })).get(callbackPath), 'unavailable');
     expect((await request(appFor()).get(authorizePath)).status).toBe(503);
   });
 
@@ -256,18 +440,23 @@ describe('Google OAuth/OIDC routes', () => {
     const context = fixture();
     const { db, redis, google } = context;
     const browser = context.browser();
-    const { state, nonce } = await browser.start();
+    const { state, nonce, attempt } = await browser.start();
     const proof = browser.proof;
     const { codeVerifier } = JSON.parse(redis.values.get(stateKey(state)).value);
     google.nonce = nonce;
     const response = await browser.callback(state);
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ token_type: 'bearer', expires_in: 900 });
-    expect(response.body.access_token).toBeTruthy();
+    expectCallback(response);
+    expect(response.body.access_token).toBeUndefined();
     expect(response.headers['cache-control']).toBe('no-store');
     expectCorrelationCleared(response);
     expect(browser.proof).toBeUndefined();
-    const refresh = response.headers['set-cookie'].find((cookie) => cookie.startsWith('outpost_refresh='));
+    expect(db.sessions).toHaveLength(0);
+    const grant = browser.handoff;
+    const activation = await browser.activate(attempt);
+    expect(activation.status).toBe(200);
+    expect(activation.body).toMatchObject({ token_type: 'bearer', expires_in: 900 });
+    expect(activation.body.access_token).toBeTruthy();
+    const refresh = activation.headers['set-cookie'].find((cookie) => cookie.startsWith('outpost_refresh='));
     expect(refresh).toMatch(/; Path=\/api\/v1\/auth;.*HttpOnly; Secure; SameSite=Strict/);
     expect(db.users).toHaveLength(1);
     expect(db.users[0].primaryEmail).toBe('person@example.com');
@@ -282,9 +471,9 @@ describe('Google OAuth/OIDC routes', () => {
     expect(form.get('code_verifier')).toBe(codeVerifier);
     expect(form.get('code')).toBe('one-time-code');
     const replay = await browser.callback(state, { cookie: proof });
-    expect(replay.status).toBe(401);
-    expect(replay.body.error.message).toBe('Invalid Google authentication response');
+    expectCallback(replay, 'invalid');
     expect(correlationHeader(replay)).toBeUndefined();
+    expect((await browser.activate(attempt, grant)).status).toBe(401);
     expect(google.calls.filter(({ url }) => url === discovery.token_endpoint)).toHaveLength(1);
     expect(db.sessions).toHaveLength(1);
   });
@@ -298,7 +487,7 @@ describe('Google OAuth/OIDC routes', () => {
     const browser = context.browser();
     const { state } = await browser.start();
     const response = await browser.callback(state, { cookie });
-    expect(response.status).toBe(401);
+    expectCallback(response, 'invalid');
     expect(correlationHeader(response)).toBeUndefined();
     expect(context.redis.values.has(stateKey(state))).toBe(true);
     expectNoAuthentication(context);
@@ -319,7 +508,7 @@ describe('Google OAuth/OIDC routes', () => {
     const { state, nonce } = await browser.start();
     google.nonce = nonce;
     const response = await browser.callback(state, { iss: override.iss });
-    expect(response.status).toBe(401);
+    expectCallback(response, 'invalid');
     expectCorrelationCleared(response);
     expect(response.headers['set-cookie'].some((cookie) => cookie.startsWith('outpost_refresh='))).toBe(false);
     expect(context.db.users).toHaveLength(0);
@@ -334,11 +523,12 @@ describe('Google OAuth/OIDC routes', () => {
     const original = await db.prisma.user.create({ data: {
       displayName: 'Password User', primaryEmail: 'person@example.com', emailVerifiedAt: new Date(),
     } });
-    const browser = context.browser();
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const { state, nonce } = await browser.start();
+    for (let index = 0; index < 2; index += 1) {
+      const browser = context.browser();
+      const { state, nonce, attempt } = await browser.start();
       google.nonce = nonce;
-      expect((await browser.callback(state)).status).toBe(200);
+      expectCallback(await browser.callback(state));
+      expect((await browser.activate(attempt)).status).toBe(200);
     }
     expect(db.users).toHaveLength(2);
     expect(db.identities).toHaveLength(1);
@@ -353,17 +543,20 @@ describe('Google OAuth/OIDC routes', () => {
     const suspended = await db.prisma.user.create({ data: {
       displayName: 'Suspended', primaryEmail: null, status: 'suspended',
     } });
-    await db.prisma.oauthIdentity.create({ data: {
+    await db.prisma.oAuthIdentity.create({ data: {
       userId: suspended.id, provider: 'google', providerSubject: 'stable-google-subject',
       providerEmail: 'person@example.com',
     } });
     const browser = context.browser();
-    const { state, nonce } = await browser.start();
+    const { state, nonce, attempt } = await browser.start();
     google.nonce = nonce;
     const response = await browser.callback(state);
-    expect(response.status).toBe(401);
+    expectCallback(response);
     expectCorrelationCleared(response);
     expect(response.headers['set-cookie'].some((cookie) => cookie.startsWith('outpost_refresh='))).toBe(false);
+    const activation = await browser.activate(attempt);
+    expect(activation.status).toBe(401);
+    expect(activation.headers['set-cookie'].some((cookie) => cookie.startsWith('outpost_refresh='))).toBe(false);
     expect(db.sessions).toHaveLength(0);
   });
 
@@ -377,13 +570,15 @@ describe('Google OAuth/OIDC routes', () => {
     expect(newProof).not.toBe(oldProof);
     context.google.nonce = latest.nonce;
     const rejected = await browser.callback(older.state);
-    expect(rejected.status).toBe(401);
+    expectCallback(rejected, 'invalid');
     expect(correlationHeader(rejected)).toBeUndefined();
     expect(browser.proof).toBe(newProof);
     expectNoAuthentication(context);
     expect(context.redis.values.has(stateKey(older.state))).toBe(true);
     expect(context.redis.values.has(stateKey(latest.state))).toBe(true);
-    expect((await browser.callback(latest.state)).status).toBe(200);
+    expectCallback(await browser.callback(latest.state));
+    expect(context.db.sessions).toHaveLength(0);
+    expect((await browser.activate(latest.attempt)).status).toBe(200);
     expect(context.db.sessions).toHaveLength(1);
   });
 });
@@ -394,7 +589,7 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
     if (!Number.isInteger(valkeyPort) || valkeyPort < 1024 || valkeyPort === 6379 || valkeyPort > 65535) {
       throw new Error('Use a dedicated loopback Valkey test port');
     }
-    const url = 'redis://127.0.0.1:' + valkeyPort;
+    const url = 'redis://127.0.0.1:' + valkeyPort + '/2';
     const redis = createValkeyClient(url);
     const control = createClient({ url, socket: { connectTimeout: 2000, reconnectStrategy: false } });
     const created = [];
@@ -402,11 +597,11 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
     try {
       await control.connect();
       const browser = context.browser();
-      const { state, nonce } = await browser.start();
+      const { state, nonce, attempt } = await browser.start();
       const key = stateKey(state);
       created.push(key);
       context.google.nonce = nonce;
-      await test({ ...context, initiator: browser, control, state, key });
+      await test({ ...context, initiator: browser, control, state, key, attempt });
     } finally {
       try {
         if (control.isReady && created.length) await control.del(created);
@@ -419,25 +614,33 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
 
   it('keeps a mismatched state and TTL intact, then lets exactly one matching callback consume it', () =>
     withValkey(async (context) => {
-      const { initiator, control, state, key, google, db } = context;
+      const { initiator, control, state, key, google, db, attempt } = context;
       const ttl = await control.pTTL(key);
       expect(ttl).toBeGreaterThan(590000);
       expect(ttl).toBeLessThanOrEqual(600000);
       const raw = await control.get(key);
       const wrong = await context.browser().callback(state, { cookie: randomBytes(32).toString('base64url') });
-      expect(wrong.status).toBe(401);
+      expectCallback(wrong, 'invalid');
       expect(await control.get(key)).toBe(raw);
       expect(await control.pTTL(key)).toBeGreaterThan(0);
       expect(await control.pTTL(key)).toBeLessThanOrEqual(ttl);
       expectNoAuthentication(context);
 
       const proof = initiator.proof;
-      const replies = await Promise.all(Array.from({ length: 6 }, () => context.browser().callback(state, { cookie: proof })));
-      expect(replies.map(({ status }) => status).sort()).toEqual([200, 401, 401, 401, 401, 401]);
+      const replies = await Promise.all(Array.from({ length: 6 }, () => initiator.callback(state, { cookie: proof })));
+      for (const reply of replies) expect(reply.status).toBe(303);
+      expect(replies.filter((reply) => reply.headers.location === completePath)).toHaveLength(1);
+      expect(replies.filter((reply) => reply.headers.location === completePath + '?result=invalid')).toHaveLength(5);
       expect(replies.filter((reply) => correlationHeader(reply))).toHaveLength(1);
       expect(await control.exists(key)).toBe(0);
-      expect((await context.browser().callback(state, { cookie: proof })).status).toBe(401);
+      expectCallback(await context.browser().callback(state, { cookie: proof }), 'invalid');
       expect(google.calls.filter(({ url }) => url === discovery.token_endpoint)).toHaveLength(1);
+      expect(db.identities).toHaveLength(0);
+      expect(db.sessions).toHaveLength(0);
+      expect(db.events).toHaveLength(0);
+      const grant = initiator.handoff;
+      const activations = await Promise.all(Array.from({ length: 3 }, () => initiator.activate(attempt, grant)));
+      expect(activations.map(({ status }) => status).sort()).toEqual([200, 401, 401]);
       expect(db.identities).toHaveLength(1);
       expect(db.sessions).toHaveLength(1);
       expect(db.events).toHaveLength(1);
@@ -448,12 +651,12 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
       await context.control.pExpire(context.key, 30);
       await expect.poll(() => context.control.exists(context.key)).toBe(0);
       const response = await context.initiator.callback(context.state);
-      expect(response.status).toBe(401);
+      expectCallback(response, 'invalid');
       expect(correlationHeader(response)).toBeUndefined();
       expectNoAuthentication(context);
     }));
 
-  it.each(['invalid JSON', 'invalid fields', 'wrong key type'])('denies malformed state with %s safely', (kind) =>
+  it.each(['invalid JSON', 'invalid fields', 'invalid context ID', 'overflowing generation', 'wrong key type'])('denies malformed state with %s safely', (kind) =>
     withValkey(async (context) => {
       const { control, key, state, initiator } = context;
       if (kind === 'invalid JSON') await control.set(key, '{not-json', { EX: 60 });
@@ -461,13 +664,18 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
         const record = JSON.parse(await control.get(key));
         await control.set(key, JSON.stringify({ ...record, codeVerifier: [] }), { EX: 60 });
       }
+      if (kind === 'invalid context ID' || kind === 'overflowing generation') {
+        const record = JSON.parse(await control.get(key));
+        if (kind === 'invalid context ID') record.contextId = '00000000-0000-0000-0000-000000000000';
+        else record.generation = '9223372036854775808';
+        await control.set(key, JSON.stringify(record), { EX: 60 });
+      }
       if (kind === 'wrong key type') {
         await control.del(key);
         await control.hSet(key, 'test', 'wrong-type');
       }
       const response = await initiator.callback(state);
-      expect(response.status).toBe(401);
-      expect(response.body.error.message).toBe('Invalid Google authentication response');
+      expectCallback(response, 'invalid');
       expect(correlationHeader(response)).toBeUndefined();
       expect(await control.exists(key)).toBe(1);
       expectNoAuthentication(context);
@@ -485,8 +693,7 @@ describe.skipIf(!valkeyPort)('Google OAuth with disposable Valkey', () => {
       const response = await context.browser().callback(randomBytes(32).toString('base64url'), {
         cookie: randomBytes(32).toString('base64url'),
       });
-      expect(response.status).toBe(503);
-      expect(response.body.error.message).toBe('Google authentication is unavailable');
+      expectCallback(response, 'unavailable');
       expect(response.headers['set-cookie']).toBeUndefined();
       expectNoAuthentication(context);
     } finally {

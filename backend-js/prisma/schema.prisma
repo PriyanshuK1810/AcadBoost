@@ -23,15 +23,55 @@ model AuthSession {
   userAgent             String?           @db.VarChar(512) @map("user_agent")
   ipAddress             String?           @db.Inet @map("ip_address")
   replacedBySessionId String?           @unique(map: "uq_auth_sessions_replaced_by_session_id") @db.Uuid @map("replaced_by_session_id")
+  browserIntentId     String?           @db.Uuid @map("browser_intent_id")
   replacedBySession     AuthSession?    @relation("auth_sessionsToauth_sessions", fields: [replacedBySessionId], references: [id], onUpdate: NoAction, map: "fk_auth_sessions_replaced_by_session_id_auth_sessions")
   replacesSession       AuthSession?    @relation("auth_sessionsToauth_sessions")
+  browserIntent         AuthBrowserIntent? @relation(fields: [browserIntentId, tokenFamilyId, userId], references: [id, tokenFamilyId, sessionUserId], onDelete: Restrict, onUpdate: Restrict, map: "fk_auth_sessions_browser_intent_family_user")
   user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_auth_sessions_user_id_users")
   securityEvents        SecurityEvent[]
 
   @@index([expiresAt], map: "ix_auth_sessions_expires_at")
   @@index([tokenFamilyId], map: "ix_auth_sessions_token_family_id")
   @@index([userId], map: "ix_auth_sessions_user_id")
+  @@index([browserIntentId], map: "ix_auth_sessions_browser_intent_id")
   @@map("auth_sessions")
+}
+
+model AuthBrowserContext {
+  id            String             @id(map: "pk_auth_browser_contexts") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bindingDigest Bytes?             @unique(map: "uq_auth_browser_contexts_binding_digest") @db.ByteA @map("binding_digest")
+  generation    BigInt             @default(0)
+  createdAt     DateTime           @default(now()) @db.Timestamptz(6) @map("created_at")
+  expiresAt     DateTime           @db.Timestamptz(6) @map("expires_at")
+  retiredAt     DateTime?          @db.Timestamptz(6) @map("retired_at")
+  intents       AuthBrowserIntent[]
+
+  @@index([expiresAt], map: "ix_auth_browser_contexts_expires_at")
+  @@map("auth_browser_contexts")
+}
+
+model AuthBrowserIntent {
+  id             String             @id(map: "pk_auth_browser_intents") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contextId      String             @db.Uuid @map("context_id")
+  actionId       String             @db.Uuid @map("action_id")
+  kind           String             @db.VarChar(24)
+  generation     BigInt
+  acceptedAt     DateTime           @default(now()) @db.Timestamptz(6) @map("accepted_at")
+  redeemUntil    DateTime           @db.Timestamptz(6) @map("redeem_until")
+  claimedAt      DateTime?          @db.Timestamptz(6) @map("claimed_at")
+  logoutOutcome  String?            @db.VarChar(16) @map("logout_outcome")
+  tokenFamilyId  String?            @unique(map: "uq_auth_browser_intents_token_family_id") @db.Uuid @map("token_family_id")
+  sessionUserId  String?            @db.Uuid @map("session_user_id")
+  activatedAt    DateTime?          @db.Timestamptz(6) @map("activated_at")
+  supersededAt   DateTime?          @db.Timestamptz(6) @map("superseded_at")
+  context        AuthBrowserContext @relation(fields: [contextId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_auth_browser_intents_context_id")
+  authSessions   AuthSession[]
+
+  @@unique([contextId, actionId], map: "uq_auth_browser_intents_context_action")
+  @@unique([contextId, generation], map: "uq_auth_browser_intents_context_generation")
+  @@unique([id, tokenFamilyId, sessionUserId], map: "uq_auth_browser_intents_receipt_owner")
+  @@index([contextId, acceptedAt], map: "ix_auth_browser_intents_context_accepted")
+  @@map("auth_browser_intents")
 }
 
 model CohortEnrollment {

@@ -3,7 +3,18 @@ import {
   authenticateSession,
   endAuthSession,
   restoreAuthSession,
+  canStartGoogleSignIn,
+  checkGoogleAvailability,
+  beginGoogleSignIn,
+  completeGoogleSignIn,
 } from '../../shared/api/client'
+
+export {
+  canStartGoogleSignIn,
+  checkGoogleAvailability,
+  beginGoogleSignIn,
+  completeGoogleSignIn,
+}
 export function dashboardPath(accountType) {
   return accountType === 'coordinator' ? '/app/coordinator' : '/app/student'
 }

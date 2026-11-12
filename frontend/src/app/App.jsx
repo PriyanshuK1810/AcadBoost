@@ -10,6 +10,7 @@ import PasswordAuthPage from '../features/auth/PasswordAuthPage'
 import AccountRecoveryPage from '../features/auth/AccountRecoveryPage'
 import PhoneLoginPage from '../features/auth/PhoneLoginPage'
 import GoogleLoginPage from '../features/auth/GoogleLoginPage'
+import GoogleCompletionPage from '../features/auth/GoogleCompletionPage'
 import AccountPage from '../features/auth/AccountPage'
 import ReviewPage from '../features/review/ReviewPage'
 import WorkspaceShell from '../features/workspace/components/WorkspaceShell'
@@ -58,6 +59,7 @@ const routes = (
     <Route path="/register" element={<PasswordAuthPage mode="register" />} />
     <Route path="/auth/phone" element={<PhoneLoginPage />} />
     <Route path="/auth/google" element={<GoogleLoginPage />} />
+    <Route path="/auth/google/complete" element={<GoogleCompletionPage />} />
     <Route
       path="/auth/forgot-password"
       element={<AccountRecoveryPage mode="forgot" />}

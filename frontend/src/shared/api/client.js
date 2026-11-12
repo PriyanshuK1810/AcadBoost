@@ -25,6 +25,12 @@ let logout = null
 let logoutBearer = null
 let cookieAccountId = null
 const logoutKey = 'acadboost:pending-sign-out'
+const googleIntentKey = 'acadboost:google-attempt'
+const googleActivationKey = 'acadboost:google-activation'
+const googleBrowserKey = 'acadboost:google-browser'
+const googleIntentLifetimeMs = 12 * 60 * 1000
+const browserAuthHeaders = { 'X-Acadboost-Browser-Auth': '1' }
+let googleCompletion = null
 const listeners = new Set()
 
 function readLogoutIntent() {
@@ -53,6 +59,9 @@ const savedLogout = readLogoutIntent()
 let logoutScope = savedLogout?.scope ?? null
 let logoutAccountId =
   typeof savedLogout?.accountId === 'string' ? savedLogout.accountId : null
+let logoutActionId =
+  typeof savedLogout?.actionId === 'string' ? savedLogout.actionId : null
+let logoutPendingGoogle = savedLogout?.pendingGoogle === true
 let phase = logoutScope ? 'logout-failed' : 'idle'
 
 export function getSessionPhase() {
@@ -103,6 +112,8 @@ channel?.addEventListener('message', (event) => {
     logoutScope = null
     logoutBearer = null
     logoutAccountId = null
+    logoutActionId = null
+    logoutPendingGoogle = false
     rememberLogout(null)
     invalidate('signed-out')
   }
@@ -122,6 +133,8 @@ export function clearAccessToken() {
   logoutScope = null
   logoutBearer = null
   logoutAccountId = null
+  logoutActionId = null
+  logoutPendingGoogle = false
   cookieAccountId = null
   rememberLogout(null)
   invalidate('idle')
@@ -178,11 +191,17 @@ async function request(
 
 function authPost(
   path,
-  { token = null, body, expectedStatus, credentials } = {},
+  { token = null, body, expectedStatus, credentials, headers } = {},
 ) {
   return request(
     path,
-    { method: 'POST', body, credentials, signal: AbortSignal.timeout(15_000) },
+    {
+      method: 'POST',
+      body,
+      credentials,
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    },
     token,
     expectedStatus,
   )
@@ -193,6 +212,243 @@ function withCookieLock(action) {
   return navigator.locks
     ? navigator.locks.request('acadboost-session', action)
     : action()
+}
+
+export function canStartGoogleSignIn() {
+  return (
+    import.meta.env.VITE_GOOGLE_SIGN_IN_ENABLED === 'true' &&
+    baseUrl === '/api/v1' &&
+    window.isSecureContext === true &&
+    typeof navigator.locks?.request === 'function' &&
+    typeof crypto.randomUUID === 'function'
+  )
+}
+
+export async function checkGoogleAvailability() {
+  if (!canStartGoogleSignIn()) return false
+  try {
+    await request(
+      '/auth/google/availability',
+      { signal: AbortSignal.timeout(5000), cache: 'no-store' },
+      null,
+      204,
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+function newAuthIntentId() {
+  if (
+    baseUrl === '/api/v1' &&
+    typeof globalThis.crypto?.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID()
+  }
+  return null
+}
+
+function authIntentHeaders(actionId) {
+  return actionId ? { 'X-Acadboost-Auth-Intent': actionId } : undefined
+}
+
+function googleIntentStale() {
+  return new ApiRequestError('Start a new Google sign-in to continue.', 401, {
+    code: 'google_intent_stale',
+  })
+}
+
+function googleActivationUncertain() {
+  return new ApiRequestError(
+    'The Google sign-in could not be confirmed.',
+    503,
+    {
+      code: 'google_activation_uncertain',
+    },
+  )
+}
+
+function googleIntentIsCurrent(intent) {
+  return (
+    intent.expiresAt > Date.now() &&
+    window.localStorage.getItem(googleIntentKey) === JSON.stringify(intent)
+  )
+}
+
+function invalidateGoogleIntent() {
+  try {
+    window.localStorage.removeItem(googleIntentKey)
+    window.sessionStorage.removeItem(googleIntentKey)
+  } catch {
+    // Password and phone sign-in and sign-out do not require browser storage.
+  }
+}
+
+function hasUnconfirmedGoogleActivation() {
+  try {
+    return window.localStorage.getItem(googleActivationKey) !== null
+  } catch {
+    return false
+  }
+}
+
+function hasPendingGoogleFlow() {
+  try {
+    return (
+      window.localStorage.getItem(googleIntentKey) !== null ||
+      hasUnconfirmedGoogleActivation()
+    )
+  } catch {
+    return false
+  }
+}
+
+function hasGoogleBrowserContext() {
+  try {
+    return window.localStorage.getItem(googleBrowserKey) === '1'
+  } catch {
+    return false
+  }
+}
+
+function clearGoogleActivation(attempt) {
+  try {
+    if (
+      !attempt ||
+      window.localStorage.getItem(googleActivationKey) === attempt
+    ) {
+      window.localStorage.removeItem(googleActivationKey)
+    }
+  } catch {
+    // Storage failure cannot change the result of an existing auth operation.
+  }
+}
+
+export async function beginGoogleSignIn() {
+  if (!canStartGoogleSignIn()) throw googleIntentStale()
+  const started = generation
+  return withCookieLock(async () => {
+    if (
+      started !== generation ||
+      accessToken ||
+      !['idle', 'signed-out', 'expired'].includes(phase)
+    )
+      throw sessionChanged()
+    if (hasUnconfirmedGoogleActivation()) throw googleActivationUncertain()
+    const intent = {
+      id: crypto.randomUUID(),
+      expiresAt: Date.now() + googleIntentLifetimeMs,
+    }
+    const encoded = JSON.stringify(intent)
+    try {
+      window.sessionStorage.setItem(googleIntentKey, encoded)
+      if (window.sessionStorage.getItem(googleIntentKey) !== encoded)
+        throw googleIntentStale()
+    } catch {
+      throw googleIntentStale()
+    }
+    const context = await authPost('/auth/browser-context', {
+      expectedStatus: 200,
+      body: '{}',
+      headers: browserAuthHeaders,
+    })
+    if (typeof context?.context_id !== 'string' || started !== generation)
+      throw googleIntentStale()
+    window.localStorage.setItem(googleBrowserKey, '1')
+    await authPost('/auth/google/intent', {
+      expectedStatus: 204,
+      body: JSON.stringify({
+        context_id: context.context_id,
+        attempt: intent.id,
+      }),
+      headers: browserAuthHeaders,
+    })
+    if (
+      started !== generation ||
+      window.sessionStorage.getItem(googleIntentKey) !== encoded
+    )
+      throw googleIntentStale()
+    try {
+      window.localStorage.setItem(googleIntentKey, encoded)
+      if (!googleIntentIsCurrent(intent)) throw googleIntentStale()
+    } catch {
+      throw googleIntentStale()
+    }
+    return (
+      '/api/v1/auth/google/authorize?' +
+      new URLSearchParams({ attempt: intent.id })
+    )
+  })
+}
+
+export async function completeGoogleSignIn() {
+  if (googleCompletion) return googleCompletion
+  if (!canStartGoogleSignIn()) throw googleIntentStale()
+  let intent
+  try {
+    intent = JSON.parse(window.sessionStorage.getItem(googleIntentKey))
+    if (!intent || !googleIntentIsCurrent(intent)) throw googleIntentStale()
+  } catch {
+    throw googleIntentStale()
+  }
+  const started = generation
+  const assertCurrent = () => {
+    if (
+      started !== generation ||
+      accessToken ||
+      !['idle', 'signed-out', 'expired'].includes(phase) ||
+      !googleIntentIsCurrent(intent)
+    ) {
+      throw googleIntentStale()
+    }
+  }
+  const operation = withCookieLock(async () => {
+    assertCurrent()
+    if (hasUnconfirmedGoogleActivation()) throw googleActivationUncertain()
+    // Persist the unresolved write before dispatch. A reload cannot replay it or restore it blindly.
+    window.localStorage.setItem(googleActivationKey, intent.id)
+    window.sessionStorage.removeItem(googleIntentKey)
+    let activated = false
+    try {
+      const result = await authPost('/auth/refresh', {
+        expectedStatus: 200,
+        headers: { 'X-Acadboost-Google-Attempt': intent.id },
+      })
+      if (typeof result?.access_token !== 'string' || !result.access_token) {
+        throw googleActivationUncertain()
+      }
+      const token = result.access_token
+      activated = true
+      assertCurrent()
+      const user = await request(
+        '/me',
+        { signal: AbortSignal.timeout(15_000) },
+        token,
+      )
+      if (typeof user?.id !== 'string' || !user.id)
+        throw googleActivationUncertain()
+      assertCurrent()
+      window.localStorage.removeItem(googleIntentKey)
+      clearGoogleActivation(intent.id)
+      publishAuthenticatedSession(token, user)
+      return user
+    } catch (error) {
+      if (activated) throw error
+      if (error.status >= 400 && error.status < 500) {
+        clearGoogleActivation(intent.id)
+      } else {
+        throw googleActivationUncertain()
+      }
+      throw error
+    }
+  })
+  googleCompletion = operation
+  try {
+    return await operation
+  } finally {
+    if (googleCompletion === operation) googleCompletion = null
+  }
 }
 
 function sessionChanged() {
@@ -227,6 +483,8 @@ async function refreshSession(started, previousToken) {
     const expectedAccount = accountId
     const operation = withCookieLock(() => {
       if (started !== generation || !canRestoreSession()) throw sessionChanged()
+      if (!previousToken && hasUnconfirmedGoogleActivation())
+        throw googleActivationUncertain()
       return refreshBearer(expectedAccount)
     })
     refresh = operation
@@ -291,7 +549,11 @@ export async function apiRequest(path, options = {}) {
 }
 
 export async function restoreAuthSession() {
-  if (!canRestoreSession()) return null
+  if (
+    !canRestoreSession() ||
+    (!accessToken && hasUnconfirmedGoogleActivation())
+  )
+    return null
   if (restoration?.generation === generation) return restoration.result
   const started = generation
   const signedOutAccounts = new Set()
@@ -319,18 +581,37 @@ export async function restoreAuthSession() {
   }
 }
 
+function publishAuthenticatedSession(token, user) {
+  accessToken = token
+  accountId = user?.id ?? null
+  cookieAccountId = accountId
+  logoutBearer = null
+  logoutAccountId = null
+  logoutActionId = null
+  logoutPendingGoogle = false
+  logoutScope = null
+  rememberLogout(null)
+  publish('active')
+  if (accountId) channel?.postMessage({ type: 'signed-in', accountId })
+}
+
 export async function authenticateSession(path, input) {
+  invalidateGoogleIntent()
   if (phase === 'signing-out' || phase === 'authenticating')
     throw sessionChanged()
   const priorRefresh = refresh
   const previous = phase
   const started = ++generation
+  const intentHeaders = authIntentHeaders(newAuthIntentId())
   publish('authenticating')
   try {
     await priorRefresh?.catch(() => {})
     return await withCookieLock(async () => {
       if (started !== generation) throw sessionChanged()
-      const result = await authPost(path, { body: JSON.stringify(input) })
+      const result = await authPost(path, {
+        body: JSON.stringify(input),
+        headers: intentHeaders,
+      })
       const token = result?.access_token
       if (typeof token !== 'string' || !token)
         throw new Error('The server did not return an access credential.')
@@ -340,15 +621,8 @@ export async function authenticateSession(path, input) {
         token,
       )
       if (started !== generation) throw sessionChanged()
-      accessToken = token
-      accountId = user?.id ?? null
-      cookieAccountId = accountId
-      logoutBearer = null
-      logoutAccountId = null
-      logoutScope = null
-      rememberLogout(null)
-      publish('active')
-      if (accountId) channel?.postMessage({ type: 'signed-in', accountId })
+      clearGoogleActivation()
+      publishAuthenticatedSession(token, user)
       return user
     })
   } catch (error) {
@@ -358,16 +632,28 @@ export async function authenticateSession(path, input) {
 }
 
 export function endAuthSession(scope) {
+  const pendingGoogle = logoutPendingGoogle || hasPendingGoogleFlow()
+  invalidateGoogleIntent()
   if (logout) return logout
-  if (phase === 'signed-out') return Promise.resolve()
+  if (phase === 'signed-out' && !pendingGoogle) return Promise.resolve()
   if (phase === 'authenticating') return Promise.reject(sessionChanged())
   const retrying = phase === 'logout-failed'
   logoutScope ??= scope ?? 'current'
   const path = logoutScope === 'all' ? '/auth/logout-all' : '/auth/logout'
+  logoutActionId ??= newAuthIntentId()
+  logoutPendingGoogle = pendingGoogle
   const priorRefresh = refresh
   logoutBearer ??= accessToken
   logoutAccountId ??= accountId
-  rememberLogout({ scope: logoutScope, accountId: logoutAccountId })
+  function saveAction() {
+    rememberLogout({
+      scope: logoutScope,
+      accountId: logoutAccountId,
+      actionId: logoutActionId,
+      pendingGoogle,
+    })
+  }
+  saveAction()
   invalidate('signing-out')
 
   logout = (async () => {
@@ -382,19 +668,45 @@ export function endAuthSession(scope) {
               logoutAccountId &&
               cookieAccountId &&
               logoutAccountId !== cookieAccountId
+            const includeBinding = pendingGoogle || hasGoogleBrowserContext()
             await authPost(path, {
               token: logoutBearer,
               expectedStatus: 204,
-              credentials: keepCookie ? 'omit' : 'include',
+              credentials: keepCookie && !includeBinding ? 'omit' : 'include',
+              headers: {
+                ...authIntentHeaders(logoutActionId),
+                ...(keepCookie && includeBinding && { 'X-Acadboost-Keep-Refresh-Cookie': '1' }),
+              },
             })
             return
           } catch (error) {
-            if (error.status !== 401 || rotated) throw error
+            if (error.status !== 401) throw error
+            // A definitive denial cannot be replayed with a newly recovered bearer.
+            logoutActionId = newAuthIntentId()
+            saveAction()
+            if (
+              rotated ||
+              (logoutAccountId &&
+                cookieAccountId &&
+                logoutAccountId !== cookieAccountId)
+            )
+              throw error
           }
+        }
+        if (pendingGoogle && !logoutBearer && !logoutAccountId) {
+          await authPost(path, {
+            expectedStatus: 204,
+            headers: authIntentHeaders(logoutActionId),
+          })
+          return
         }
         if (retrying && !logoutAccountId) throw sessionChanged()
         logoutBearer = await refreshBearer(logoutAccountId)
-        await authPost(path, { token: logoutBearer, expectedStatus: 204 })
+        await authPost(path, {
+          token: logoutBearer,
+          expectedStatus: 204,
+          headers: authIntentHeaders(logoutActionId),
+        })
       })
       const confirmed = {
         type: 'signed-out',
@@ -404,8 +716,11 @@ export function endAuthSession(scope) {
       if (cookieAccountId === logoutAccountId) cookieAccountId = null
       logoutBearer = null
       logoutAccountId = null
+      logoutActionId = null
+      logoutPendingGoogle = false
       logoutScope = null
       rememberLogout(null)
+      clearGoogleActivation()
       publish('signed-out')
       if (confirmed.accountId) channel?.postMessage(confirmed)
     } catch (error) {

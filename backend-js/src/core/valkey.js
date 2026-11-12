@@ -13,6 +13,7 @@ export function createValkeyClient(url) {
     await connection;
   }
   return {
+    async ping() { await ready(); return client.ping(); },
     async set(key, value, options) { await ready(); return client.set(key, value, options); },
     async getDel(key) { await ready(); return client.getDel(key); },
     async eval(script, options) { await ready(); return client.eval(script, options); },

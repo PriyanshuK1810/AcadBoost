@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose';
-import { notReady, unauthorized } from '../../core/errors.js';
-import { issueSession } from './service.js';
+import { AppError, forbidden, notReady, unauthorized } from '../../core/errors.js';
+import {
+  advanceBrowserIntent, findBrowserAction, findCurrentGoogleReceipt, guardedCookieCount,
+  guardedHeaderValues, lockBrowserContext, lockUserRows, validateBrowserRequest,
+} from './browserIntents.js';
+import { createGoogleHandoff, currentGoogleIntent, GOOGLE_ATTEMPT_PATTERN, GOOGLE_UUID_LUA } from './googleHandoff.js';
+import { findUsableRefreshSession, REFRESH_COOKIE } from './service.js';
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const DISCOVERY_ENDPOINT = 'https://accounts.google.com/.well-known/openid-configuration';
@@ -16,6 +21,7 @@ const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const stateKey = (state) => `outpost:oauth-state:v1:${state}`;
 const secret = () => randomBytes(32).toString('base64url');
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const failurePath = (result) => `/auth/google/complete?result=${result}`;
 
 // Check the proof and consume state together. A mismatch leaves the record and TTL intact.
 const consumeState = `
@@ -28,9 +34,16 @@ const consumeState = `
   local function validSecret(value)
     return type(value) == 'string' and #value == 43 and string.match(value, '^[A-Za-z0-9_%-]+$')
   end
-  if not validSecret(record.nonce) or not validSecret(record.codeVerifier) then return nil end
+  local function validUuid(value)
+    return type(value) == 'string' and string.match(value, '${GOOGLE_UUID_LUA}')
+  end
+  if not validSecret(record.nonce) or not validSecret(record.codeVerifier) or
+     not validUuid(record.attemptId) or not validUuid(record.contextId) or not validUuid(record.intentId) or
+     type(record.generation) ~= 'string' or #record.generation > 19 or
+     (#record.generation == 19 and record.generation > '9223372036854775807') or
+     not string.match(record.generation, '^[1-9][0-9]*$') then return nil end
   redis.call('DEL', KEYS[1])
-  return { record.nonce, record.codeVerifier }
+  return { record.nonce, record.codeVerifier, record.attemptId, record.contextId, record.intentId, record.generation }
 `;
 
 async function getJson(fetchImpl, url, options) {
@@ -90,45 +103,81 @@ async function verifiedPrincipal(settings, code, nonce, codeVerifier, fetchImpl)
   }
 }
 
-async function resolveGoogleUser(tx, principal) {
-  await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${'google:' + principal.subject}, 0))`;
-  const identity = await tx.oauthIdentity.findUnique({
-    where: { provider_providerSubject: { provider: 'google', providerSubject: principal.subject } },
-  });
-  if (identity) {
-    const user = await tx.user.findUnique({ where: { id: identity.userId } });
-    if (!user || user.status !== 'active') throw unauthorized(INVALID);
-    await tx.oauthIdentity.update({ where: { id: identity.id }, data: { providerEmail: principal.email } });
-    return user;
+function requireGoogle(settings, redisClient) {
+  if (settings.googleHandoffEnabled !== true || !settings.googleClientId ||
+      !settings.googleClientSecret || !settings.googleRedirectUri || !settings.authSigningKey) {
+    throw notReady('Google authentication is not configured');
   }
-  await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${'email:' + principal.email}, 0))`;
-  const owner = await tx.user.findFirst({
-    where: { primaryEmail: { equals: principal.email, mode: 'insensitive' } },
-  });
-  const user = await tx.user.create({
-    data: {
-      displayName: principal.name || 'Outpost member',
-      primaryEmail: owner ? null : principal.email,
-      emailVerifiedAt: owner ? null : new Date(),
-    },
-  });
-  await tx.oauthIdentity.create({
-    data: {
-      userId: user.id, provider: 'google',
-      providerSubject: principal.subject, providerEmail: principal.email,
-    },
-  });
-  return user;
+  if (!redisClient) throw notReady('Google authentication is unavailable');
 }
 
-export function registerGoogleRoutes(app, {
-  prisma, settings, redisClient, fetchImpl = fetch,
-}) {
-  app.get('/api/v1/auth/google/authorize', async (_request, response) => {
-    if (!settings.googleClientId || !settings.googleRedirectUri) {
-      throw notReady('Google authentication is not configured');
+function liveUnclaimed(intent, context) {
+  return intent?.kind === 'google' && !intent.claimedAt && intent.generation === context.generation
+    && intent.redeemUntil > new Date();
+}
+
+export function registerGoogleRoutes(app, { prisma, settings, redisClient, fetchImpl = fetch }) {
+  app.get('/api/v1/auth/google/availability', async (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    requireGoogle(settings, redisClient);
+    if (request.get('Sec-Fetch-Site') !== 'same-origin') throw notReady('Google authentication is unavailable');
+    try {
+      await Promise.all([redisClient.ping(), prisma.$queryRaw`SELECT 1 FROM auth_browser_contexts LIMIT 1`]);
+    } catch {
+      throw notReady('Google authentication is unavailable');
     }
-    if (!redisClient) throw notReady('Google authentication is unavailable');
+    response.sendStatus(204);
+  });
+
+  app.post('/api/v1/auth/google/intent', async (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    requireGoogle(settings, redisClient);
+    const origins = guardedHeaderValues(request, 'origin');
+    if (origins.length !== 1 || origins[0] !== settings.publicAppOrigin) throw forbidden();
+    if (!validateBrowserRequest(request, settings, 'x-acadboost-browser-auth') ||
+        guardedCookieCount(request, REFRESH_COOKIE) > 1) throw unauthorized(INVALID);
+    const { attempt, context_id: contextId } = request.body ?? {};
+    if (typeof attempt !== 'string' || !GOOGLE_ATTEMPT_PATTERN.test(attempt) ||
+        typeof contextId !== 'string' || !GOOGLE_ATTEMPT_PATTERN.test(contextId) || Object.keys(request.body).length !== 2) {
+      throw new AppError(422, 'validation_error', 'Invalid Google authentication intent');
+    }
+    const actionId = attempt.toLowerCase();
+    await prisma.$transaction(async (tx) => {
+      const context = await lockBrowserContext(tx, request, settings);
+      if (context.id !== contextId.toLowerCase()) throw unauthorized(INVALID);
+      const prior = await findBrowserAction(tx, context, actionId);
+      if (liveUnclaimed(prior, context)) return;
+      if (prior) throw new AppError(409, 'auth_intent_already_submitted', 'This authentication action has already been submitted');
+      if (await findUsableRefreshSession(tx, request.cookies?.[REFRESH_COOKIE], settings, request)) {
+        throw new AppError(409, 'session_conflict', 'A signed-in session already exists.');
+      }
+      const receipt = await findCurrentGoogleReceipt(tx, context);
+      await lockUserRows(tx, receipt ? [receipt.sessionUserId] : []);
+      await advanceBrowserIntent(tx, context, { actionId, kind: 'google' });
+    });
+    response.sendStatus(204);
+  });
+
+  app.get('/api/v1/auth/google/authorize', async (request, response) => {
+    response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache', 'Referrer-Policy': 'no-referrer' });
+    requireGoogle(settings, redisClient);
+    const attemptId = request.query.attempt;
+    if (typeof attemptId !== 'string' || !GOOGLE_ATTEMPT_PATTERN.test(attemptId) ||
+        request.get('Sec-Fetch-Site') !== 'same-origin') {
+      throw unauthorized('Invalid Google authentication request');
+    }
+    const intent = await prisma.$transaction(async (tx) => {
+      const context = await lockBrowserContext(tx, request, settings);
+      const intent = await findBrowserAction(tx, context, attemptId.toLowerCase());
+      if (!liveUnclaimed(intent, context)) throw unauthorized('Invalid Google authentication request');
+      const [{ now }] = await tx.$queryRaw`SELECT clock_timestamp() AS now`;
+      const claimedAt = new Date(Math.max(now, intent.acceptedAt));
+      if (claimedAt >= intent.redeemUntil) throw unauthorized('Invalid Google authentication request');
+      await tx.authBrowserIntent.update({ where: { id: intent.id }, data: { claimedAt } });
+      return intent;
+    });
+    const ttl = Math.min(STATE_TTL_SECONDS, Math.floor((intent.redeemUntil.getTime() - Date.now()) / 1000));
+    if (ttl < 1) throw unauthorized('Invalid Google authentication request');
     const correlation = secret();
     const correlationDigest = digest(correlation);
     let state, nonce, codeVerifier;
@@ -138,8 +187,10 @@ export function registerGoogleRoutes(app, {
       codeVerifier = secret();
       let stored;
       try {
-        stored = await redisClient.set(stateKey(state), JSON.stringify({ nonce, codeVerifier, correlationDigest }),
-          { EX: STATE_TTL_SECONDS, NX: true });
+        stored = await redisClient.set(stateKey(state), JSON.stringify({
+          nonce, codeVerifier, correlationDigest, attemptId: intent.actionId, contextId: intent.contextId,
+          intentId: intent.id, generation: intent.generation.toString(),
+        }), { EX: ttl, NX: true });
       } catch {
         throw notReady('Google authentication is unavailable');
       }
@@ -159,47 +210,59 @@ export function registerGoogleRoutes(app, {
       code_challenge_method: 'S256',
     })) url.searchParams.set(key, value);
     response.cookie(CORRELATION_COOKIE, correlation, {
-      ...CORRELATION_COOKIE_OPTIONS, maxAge: STATE_TTL_SECONDS * 1000,
+      ...CORRELATION_COOKIE_OPTIONS, maxAge: ttl * 1000,
     });
     response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }).redirect(302, url.toString());
   });
 
   app.get(CALLBACK_PATH, async (request, response) => {
-    response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
-    if (!settings.googleClientId || !settings.googleClientSecret ||
-        !settings.googleRedirectUri || !settings.authSigningKey) {
-      throw notReady('Google authentication is not configured');
+    response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache', 'Referrer-Policy': 'no-referrer' });
+    const redirectFailure = (result) => response.redirect(303, failurePath(result));
+    if (settings.googleHandoffEnabled !== true || !settings.googleClientId ||
+        !settings.googleClientSecret || !settings.googleRedirectUri || !settings.authSigningKey) {
+      return redirectFailure('unavailable');
     }
-    if (!redisClient) throw notReady('Google authentication is unavailable');
-    const { state = '', code = '', iss = '' } = request.query;
+    if (!redisClient) return redirectFailure('unavailable');
+    const { state = '', code = '', iss = '', error = '' } = request.query;
     const proof = request.cookies?.[CORRELATION_COOKIE];
     if (typeof state !== 'string' || !secretPattern.test(state) ||
-        typeof proof !== 'string' || !secretPattern.test(proof) ||
+        typeof proof !== 'string' || !secretPattern.test(proof) || guardedCookieCount(request, CORRELATION_COOKIE) !== 1 ||
         typeof code !== 'string' || code.length > 4096 ||
-        typeof iss !== 'string' || iss.length > 256) throw unauthorized(INVALID);
+        typeof iss !== 'string' || iss.length > 256 ||
+        typeof error !== 'string' || error.length > 128) return redirectFailure('invalid');
     let correlation;
     try {
       correlation = await redisClient.eval(consumeState, { keys: [stateKey(state)], arguments: [digest(proof)] });
+    } catch {
+      return redirectFailure('unavailable');
     }
-    catch { throw notReady('Google authentication is unavailable'); }
-    if (!correlation) throw unauthorized(INVALID);
+    if (!correlation) return redirectFailure('invalid');
     response.clearCookie(CORRELATION_COOKIE, CORRELATION_COOKIE_OPTIONS);
+    if (error === 'access_denied') return redirectFailure('cancelled');
+    if (error) return redirectFailure('unavailable');
     if (!code || !['accounts.google.com', 'https://accounts.google.com'].includes(iss)) {
-      throw unauthorized(INVALID);
+      return redirectFailure('invalid');
     }
-    const [nonce, codeVerifier] = correlation;
-    const principal = await verifiedPrincipal(settings, code, nonce, codeVerifier, fetchImpl);
-    const credentials = await prisma.$transaction(async (tx) => {
-      const user = await resolveGoogleUser(tx, principal);
-      return issueSession({
-        authSession: tx.authSession, securityEvent: tx.securityEvent,
-        $transaction: async (callback) => callback(tx),
-      }, settings, user, 'google_oidc', request);
-    });
-    response.cookie('outpost_refresh', credentials.refresh, {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: '/api/v1/auth', secure: true, httpOnly: true, sameSite: 'strict',
-    });
-    response.json({ access_token: credentials.access, token_type: 'bearer', expires_in: 900 });
+    try {
+      const [nonce, codeVerifier, attemptId, contextId, intentId, generation] = correlation;
+      if (![attemptId, contextId, intentId].every((id) => GOOGLE_ATTEMPT_PATTERN.test(id ?? ''))) {
+        return redirectFailure('invalid');
+      }
+      const reference = { attemptId, contextId, intentId, generation };
+      if (!await currentGoogleIntent(prisma, reference)) return redirectFailure('invalid');
+      const principal = await verifiedPrincipal(settings, code, nonce, codeVerifier, fetchImpl);
+      const intent = await currentGoogleIntent(prisma, reference);
+      if (!intent) return redirectFailure('invalid');
+      await createGoogleHandoff(redisClient, principal, intent, response);
+      return response.redirect(303, '/auth/google/complete');
+    } catch (error) {
+      if (error?.status === 401) return redirectFailure('invalid');
+      if (error?.status === 503) return redirectFailure('unavailable');
+      console.error('google_oauth_callback_failed', {
+        requestId: request.requestId,
+        category: 'unexpected',
+      });
+      return redirectFailure('unavailable');
+    }
   });
 }

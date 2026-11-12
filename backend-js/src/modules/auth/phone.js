@@ -2,7 +2,9 @@ import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { z } from 'zod';
 import { AppError, notReady, unauthorized } from '../../core/errors.js';
-import { issueSession } from './service.js';
+import { lockUserRows } from './browserIntents.js';
+import { acceptCredentialIntent, checkCredentialDeadline, lockCredentialIntent } from './routes.js';
+import { createSession, setRefreshCookie, signSession } from './service.js';
 
 const INVALID = 'Invalid or expired OTP';
 const RATE_SCRIPT = `local count = redis.call('INCR', KEYS[1])
@@ -119,9 +121,12 @@ export function registerPhoneRoutes(app, {
 
   app.post('/api/v1/auth/phone/verify', async (request, response) => {
     const { phone, code } = parse(verifyInput, request.body);
+    const intent = await acceptCredentialIntent(prisma, settings, request, 'phone');
     if (!settings.authSigningKey) throw notReady('Authentication is not configured');
     const outcome = await prisma.$transaction(async (tx) => {
+      await lockCredentialIntent(tx, settings, request, intent);
       await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${phone}, 0))`;
+      await checkCredentialDeadline(tx, intent);
       const challenge = await tx.otpChallenge.findFirst({
         where: { phoneE164: phone, purpose: 'login' },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -143,6 +148,8 @@ export function registerPhoneRoutes(app, {
       let identity = await tx.phoneIdentity.findUnique({ where: { phoneE164: phone } });
       let user;
       if (identity) {
+        if (intent) await lockUserRows(tx, [identity.userId]);
+        await checkCredentialDeadline(tx, intent);
         user = await tx.user.findUnique({ where: { id: identity.userId } });
         if (!user || user.status !== 'active') return { rejected: true };
         if (!identity.verifiedAt) {
@@ -154,18 +161,13 @@ export function registerPhoneRoutes(app, {
           data: { id: randomUUID(), userId: user.id, phoneE164: phone, verifiedAt: now },
         });
       }
-      const credentials = await issueSession({
-        authSession: tx.authSession, securityEvent: tx.securityEvent,
-        $transaction: async (callback) => callback(tx),
-      }, settings, user, 'phone_otp', request);
-      return { credentials };
+      const issued = await createSession(tx, settings, user, 'phone_otp', request);
+      return { issued };
     });
     if (outcome.rejected) throw unauthorized(INVALID);
-    response.cookie('outpost_refresh', outcome.credentials.refresh, {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: '/api/v1/auth', secure: true, httpOnly: true, sameSite: 'strict',
-    });
+    const credentials = await signSession(settings, outcome.issued);
+    setRefreshCookie(response, credentials.refresh);
     response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
-    response.json({ access_token: outcome.credentials.access, token_type: 'bearer', expires_in: 900 });
+    response.json({ access_token: credentials.access, token_type: 'bearer', expires_in: 900 });
   });
 }

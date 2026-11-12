@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { conflict, notFound, notReady, unauthorized } from '../../core/errors.js';
+import { contextProofDigest, guardedCookieCount, guardedHeaderValues } from './browserIntents.js';
 import { DUMMY_PASSWORD_HASH, hashPassword, verifyPassword } from './passwords.js';
 import { decodeAccessToken, issueAccessToken } from './tokens.js';
 
@@ -15,6 +16,27 @@ const eventData = (request) => ({
   userAgent: request.get('user-agent')?.slice(0, 512) || null,
   ipAddress: null,
 });
+
+export function setRefreshCookie(response, refresh, expiresAt) {
+  response.cookie(REFRESH_COOKIE, refresh, {
+    maxAge: expiresAt
+      ? Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)) * 1000
+      : REFRESH_SECONDS * 1000,
+    path: COOKIE_PATH,
+    secure: true,
+    httpOnly: true,
+    sameSite: 'strict',
+  });
+}
+
+export function clearRefreshCookie(response) {
+  response.clearCookie(REFRESH_COOKIE, {
+    path: COOKIE_PATH,
+    secure: true,
+    httpOnly: true,
+    sameSite: 'strict',
+  });
+}
 
 export function publicUser(user) {
   return {
@@ -71,37 +93,74 @@ export async function authenticatePassword(prisma, identifier, password) {
 }
 
 export async function issueSession(prisma, settings, user, method, request) {
+  const issued = await prisma.$transaction((tx) => createSession(tx, settings, user, method, request));
+  return signSession(settings, issued);
+}
+
+export async function createSession(tx, settings, user, method, request, binding) {
   if (!settings.authSigningKey) throw notReady('Authentication is not configured');
   if (user.status !== 'active') throw unauthorized('Authentication failed');
   const now = new Date();
   const refresh = newRefresh();
   const metadata = eventData(request);
-  const session = await prisma.$transaction(async (tx) => {
-    const created = await tx.authSession.create({
-      data: {
-        id: randomUUID(),
-        userId: user.id,
-        tokenFamilyId: randomUUID(),
-        refreshTokenHash: digest(refresh),
-        createdAt: now,
-        lastUsedAt: now,
-        expiresAt: expiry(now),
-        ...metadata,
-      },
-    });
-    await tx.securityEvent.create({
-      data: {
-        userId: user.id,
-        sessionId: created.id,
-        eventType: 'authentication.succeeded',
-        eventMetadata: { method },
-        ...metadata,
-      },
-    });
-    return created;
+  const expiresAt = binding ? new Date(Math.min(expiry(now), binding.expiresAt)) : expiry(now);
+  if (expiresAt <= now) throw unauthorized('Authentication failed');
+  const created = await tx.authSession.create({
+    data: {
+      id: randomUUID(),
+      userId: user.id,
+      tokenFamilyId: binding?.tokenFamilyId ?? randomUUID(),
+      ...(binding && { browserIntentId: binding.intentId }),
+      refreshTokenHash: digest(refresh),
+      createdAt: now,
+      lastUsedAt: now,
+      expiresAt,
+      ...metadata,
+    },
   });
-  const access = await issueAccessToken(settings, user.id, session.id);
-  return { access, refresh };
+  await tx.securityEvent.create({
+    data: {
+      userId: user.id,
+      sessionId: created.id,
+      eventType: 'authentication.succeeded',
+      eventMetadata: { method },
+      ...metadata,
+    },
+  });
+  return { userId: user.id, sessionId: created.id, refresh, expiresAt: binding ? expiresAt : undefined };
+}
+
+export async function signSession(settings, { userId, sessionId, refresh, expiresAt }) {
+  return { access: await issueAccessToken(settings, userId, sessionId), refresh, expiresAt };
+}
+
+function familyScope(session) {
+  return {
+    tokenFamilyId: session.tokenFamilyId, userId: session.userId, browserIntentId: session.browserIntentId ?? null,
+  };
+}
+
+async function eligibleFencedUser(prisma, session, settings, request, allowReplaced = false) {
+  const proof = request && contextProofDigest(request);
+  if (!proof || !settings?.publicAppOrigin) return null;
+  const [user] = await prisma.$queryRaw`
+    SELECT u.id, u.display_name AS "displayName", u.username, u.primary_email AS "primaryEmail",
+           u.email_verified_at AS "emailVerifiedAt", u.account_type AS "accountType",
+           c.expires_at AS "contextExpiresAt"
+    FROM auth_sessions s
+    JOIN users u ON u.id = s.user_id
+    JOIN auth_browser_intents i
+      ON i.id = s.browser_intent_id AND i.token_family_id = s.token_family_id AND i.session_user_id = s.user_id
+    JOIN auth_browser_contexts c ON c.id = i.context_id
+    WHERE s.id = ${session.id}::uuid AND u.id = ${session.userId}::uuid AND u.status = 'active'
+      AND ((s.revoked_at IS NULL AND s.replaced_by_session_id IS NULL)
+           OR (${allowReplaced} AND s.replaced_by_session_id IS NOT NULL))
+      AND (s.expires_at > clock_timestamp() OR (${allowReplaced} AND s.replaced_by_session_id IS NOT NULL))
+      AND i.kind = 'google' AND i.activated_at IS NOT NULL AND i.superseded_at IS NULL
+      AND i.generation = c.generation AND c.retired_at IS NULL AND c.expires_at > clock_timestamp()
+      AND c.binding_digest = ${proof}
+  `;
+  return user ?? null;
 }
 
 export async function rotateRefresh(prisma, settings, refreshToken, request) {
@@ -114,10 +173,19 @@ export async function rotateRefresh(prisma, settings, refreshToken, request) {
     const user = await tx.user.findUnique({ where: { id: source.userId } });
     const current = await tx.authSession.findUnique({ where: { id: source.id } });
     if (!user || !current) throw unauthorized('Invalid or expired refresh credential');
+    let contextExpiresAt;
+    if (current.browserIntentId) {
+      const origins = guardedHeaderValues(request, 'origin');
+      const fenced = origins.length === 1 && origins[0] === settings.publicAppOrigin
+        && guardedCookieCount(request, REFRESH_COOKIE) <= 1
+        && await eligibleFencedUser(tx, current, settings, request, true);
+      if (!fenced) throw unauthorized('Invalid or expired refresh credential');
+      contextExpiresAt = fenced.contextExpiresAt;
+    }
     const now = new Date();
     if (current.replacedBySessionId) {
       await tx.authSession.updateMany({
-        where: { tokenFamilyId: current.tokenFamilyId, revokedAt: null },
+        where: { ...familyScope(current), revokedAt: null },
         data: { revokedAt: now },
       });
       await tx.securityEvent.create({
@@ -135,15 +203,18 @@ export async function rotateRefresh(prisma, settings, refreshToken, request) {
       throw unauthorized('Invalid or expired refresh credential');
     }
     const nextRefresh = newRefresh();
+    const expiresAt = contextExpiresAt ? new Date(Math.min(expiry(now), contextExpiresAt)) : expiry(now);
+    if (expiresAt <= now) throw unauthorized('Invalid or expired refresh credential');
     const next = await tx.authSession.create({
       data: {
         id: randomUUID(),
         userId: current.userId,
         tokenFamilyId: current.tokenFamilyId,
+        ...(current.browserIntentId && { browserIntentId: current.browserIntentId }),
         refreshTokenHash: digest(nextRefresh),
         createdAt: now,
         lastUsedAt: now,
-        expiresAt: expiry(now),
+        expiresAt,
         ...metadata,
       },
     });
@@ -160,10 +231,37 @@ export async function rotateRefresh(prisma, settings, refreshToken, request) {
         ...metadata,
       },
     });
-    return { userId: user.id, sessionId: next.id, refresh: nextRefresh };
+    return { userId: user.id, sessionId: next.id, refresh: nextRefresh, expiresAt: contextExpiresAt ? expiresAt : undefined };
   });
   if (outcome.replay) throw unauthorized('Invalid or expired refresh credential');
-  return { access: await issueAccessToken(settings, outcome.userId, outcome.sessionId), refresh: outcome.refresh };
+  return signSession(settings, outcome);
+}
+
+export async function findRefreshSession(prisma, refreshToken) {
+  if (typeof refreshToken !== 'string' || !refreshToken) return null;
+  return prisma.authSession.findUnique({ where: { refreshTokenHash: digest(refreshToken) } });
+}
+
+// Read-only check for guarded Google activation. Do not rotate, revoke or record
+// replay events when deciding whether an existing browser session blocks sign-in.
+export async function findUsableRefreshSession(prisma, refreshToken, settings, request) {
+  const session = await findRefreshSession(prisma, refreshToken);
+  if (!session || session.revokedAt || session.replacedBySessionId || session.expiresAt <= new Date()) return null;
+  if (session.browserIntentId) return await eligibleFencedUser(prisma, session, settings, request) ? session : null;
+  const user = await prisma.user.findUnique({ where: { id: session.userId } });
+  return user?.status === 'active' ? session : null;
+}
+
+export async function findAccessSession(prisma, settings, request, { userId, sessionId }) {
+  const session = await prisma.authSession.findUnique({ where: { id: sessionId } });
+  if (!session || session.userId !== userId) return null;
+  if (session.browserIntentId) {
+    const user = await eligibleFencedUser(prisma, session, settings, request);
+    return user ? { user, session } : null;
+  }
+  if (session.revokedAt || session.replacedBySessionId || session.expiresAt <= new Date()) return null;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  return user?.status === 'active' ? { user, session } : null;
 }
 
 export function createRequireUser(prisma, settings) {
@@ -171,15 +269,10 @@ export function createRequireUser(prisma, settings) {
     try {
       const authorization = request.get('authorization');
       if (!authorization?.startsWith('Bearer ')) throw unauthorized();
-      const { userId, sessionId } = await decodeAccessToken(settings, authorization.slice(7));
-      const [user, session] = await Promise.all([
-        prisma.user.findUnique({ where: { id: userId } }),
-        prisma.authSession.findUnique({ where: { id: sessionId } }),
-      ]);
-      if (!user || !session || session.userId !== user.id ||
-          session.revokedAt || session.expiresAt <= new Date() || user.status !== 'active') {
-        throw unauthorized('Invalid or expired access credential');
-      }
+      const claims = await decodeAccessToken(settings, authorization.slice(7));
+      const eligible = await findAccessSession(prisma, settings, request, claims);
+      if (!eligible) throw unauthorized('Invalid or expired access credential');
+      const { user, session } = eligible;
       request.user = publicUser(user);
       request.authSession = session;
       next();
@@ -190,11 +283,16 @@ export function createRequireUser(prisma, settings) {
 }
 
 export async function activeSessions(prisma, userId, currentId) {
+  const now = new Date();
   const rows = await prisma.authSession.findMany({
-    where: { userId, revokedAt: null, replacedBySessionId: null, expiresAt: { gt: new Date() } },
+    where: { userId, revokedAt: null, replacedBySessionId: null, expiresAt: { gt: now } },
+    include: { browserIntent: { include: { context: true } } },
     orderBy: [{ lastUsedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
   });
-  return rows.map((row) => ({
+  return rows.filter(({ browserIntentId, browserIntent }) => !browserIntentId || (
+    browserIntent?.activatedAt && !browserIntent.supersededAt && !browserIntent.context.retiredAt
+    && browserIntent.generation === browserIntent.context.generation && browserIntent.context.expiresAt > now
+  )).map((row) => ({
     id: row.id,
     created_at: row.createdAt.toISOString(),
     last_used_at: row.lastUsedAt.toISOString(),
@@ -211,7 +309,7 @@ export async function revokeSession(prisma, userId, targetId, currentId) {
     const target = await tx.authSession.findFirst({ where: { id: targetId, userId } });
     if (!target) throw notFound('Session not found');
     const changed = await tx.authSession.updateMany({
-      where: { tokenFamilyId: target.tokenFamilyId, revokedAt: null },
+      where: { ...familyScope(target), revokedAt: null },
       data: { revokedAt: new Date() },
     });
     if (changed.count) {
@@ -230,20 +328,7 @@ export async function revokeSession(prisma, userId, targetId, currentId) {
 export async function revokeAllSessions(prisma, userId, currentId) {
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
-    const changed = await tx.authSession.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-    if (changed.count) {
-      await tx.securityEvent.create({
-        data: {
-          userId,
-          sessionId: currentId,
-          eventType: 'authentication.logout_all',
-          eventMetadata: { revoked_count: changed.count },
-        },
-      });
-    }
+    await revokeLogoutScope(tx, { id: currentId, userId }, true);
   });
 }
 
@@ -252,14 +337,23 @@ export async function revokeCurrentSession(prisma, userId, currentId) {
   if (!session || session.userId !== userId) throw unauthorized('Invalid or expired access credential');
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
-    const changed = await tx.authSession.updateMany({
-      where: { tokenFamilyId: session.tokenFamilyId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-    if (changed.count) {
-      await tx.securityEvent.create({
-        data: { userId, sessionId: currentId, eventType: 'authentication.logout', eventMetadata: {} },
-      });
-    }
+    await revokeLogoutScope(tx, session, false);
   });
+}
+
+export async function revokeLogoutScope(tx, session, all) {
+  const changed = await tx.authSession.updateMany({
+    where: { ...(all ? { userId: session.userId } : familyScope(session)), revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  if (changed.count) {
+    await tx.securityEvent.create({
+      data: {
+        userId: session.userId,
+        sessionId: session.id,
+        eventType: all ? 'authentication.logout_all' : 'authentication.logout',
+        eventMetadata: all ? { revoked_count: changed.count } : {},
+      },
+    });
+  }
 }

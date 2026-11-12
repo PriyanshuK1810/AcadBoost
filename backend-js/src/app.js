@@ -3,6 +3,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { AppError, errorHandler, notFound, notReady } from './core/errors.js';
 import { registerAuthRoutes } from './modules/auth/routes.js';
+import { registerBrowserContextRoutes } from './modules/auth/browserIntents.js';
 import { registerRecoveryRoutes } from './modules/auth/recovery.js';
 import { registerReviewRoutes } from './modules/review/routes.js';
 import { registerLearningRoutes } from './modules/learning/routes.js';
@@ -67,7 +68,8 @@ export function createApp({ prisma, settings = {}, emailProvider, redisClient, s
     }
   });
   app.get('/api/v1', (_request, response) => response.json({ name: 'Outpost API', version: 'v1' }));
-  const requireUser = registerAuthRoutes(app, { prisma, settings });
+  const requireUser = registerAuthRoutes(app, { prisma, settings, redisClient });
+  registerBrowserContextRoutes(app, { prisma, settings, redisClient });
   registerRecoveryRoutes(app, { prisma, settings, emailProvider });
   registerGoogleRoutes(app, { prisma, settings, redisClient });
   registerPhoneRoutes(app, { prisma, settings, redisClient, smsProvider });
