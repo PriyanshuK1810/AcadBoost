@@ -2,12 +2,8 @@ import { useCallback } from 'react'
 import { useLiveResource } from '../hooks/useLiveResource'
 import LiveResourceState from '../components/LiveResourceState'
 import { Link, Navigate, useLocation, useParams } from 'react-router'
-import {
-  EmptyState,
-  MetricCard,
-  PageHeading,
-  ProgressBar,
-} from '../components/WorkspaceUI'
+import { EmptyState, MetricCard, PageHeading } from '../components/WorkspaceUI'
+import ReportProgressTable from '../components/ReportProgressTable'
 import CohortSchedule from '../components/CohortSchedule'
 import { getCohortProgress, listCohorts } from '../learningApi'
 import {
@@ -46,12 +42,10 @@ function CohortAccess({ cohortId, scope }) {
     for (const id of JSON.parse(candidateIds)) {
       try {
         const cohorts = await listCohorts(id)
-        if (
-          cohorts.some(
-            (item) => item.id === cohortId && item.organization_id === id,
-          )
+        const cohort = cohorts.find(
+          (item) => item.id === cohortId && item.organization_id === id,
         )
-          return id
+        if (cohort) return cohort
       } catch (error) {
         firstError ??= error
       }
@@ -81,23 +75,33 @@ function CohortAccess({ cohortId, scope }) {
         replace
         to={withOrganization(
           location.pathname + location.search + location.hash,
-          membership.data,
+          membership.data.organization_id,
         )}
       />
     )
   }
-  return <CohortProgress cohortId={cohortId} organization={organization} />
+  return (
+    <CohortProgress
+      cohortId={cohortId}
+      organization={organization}
+      assignedVersionId={membership.data.roadmap_version_id}
+    />
+  )
 }
 
-function CohortProgress({ cohortId, organization }) {
+function CohortProgress({ cohortId, organization, assignedVersionId }) {
   const loader = useCallback(async () => {
     const report = await getCohortProgress(cohortId)
-    if (report.cohort_id && report.cohort_id !== cohortId)
+    if (
+      report?.cohort_id !== cohortId ||
+      (assignedVersionId && report.roadmap_version_id !== assignedVersionId)
+    )
       throw new Error('This cohort report could not be confirmed.')
     return report
-  }, [cohortId])
+  }, [assignedVersionId, cohortId])
   const resource = useLiveResource(loader)
   const report = resource.data
+  const assignments = report?.metrics?.possible_topic_assignments
   return (
     <>
       <PageHeading
@@ -122,8 +126,8 @@ function CohortProgress({ cohortId, organization }) {
         <>
           <section className="workspace-card">
             <p>
-              Version {report.roadmap_version_number} · All-time current
-              completion
+              Assigned version {report.roadmap_version_number ?? 'unavailable'}{' '}
+              · All-time current completion
             </p>
             <p>
               Eligible students have an active account, student membership and
@@ -135,68 +139,49 @@ function CohortProgress({ cohortId, organization }) {
           </section>
           <div className="workspace-metric-grid">
             <MetricCard
-              label="Students"
-              value={report.students.length}
-              detail="Active student accounts and memberships"
+              label="Eligible students"
+              value={report.metrics?.eligible_students ?? 'Unavailable'}
+              detail="Active student accounts, memberships and enrollments"
               tone="green"
             />
             <MetricCard
               label="Average completion"
-              value={`${report.average_percent}%`}
+              value={
+                assignments > 0 && Number.isFinite(report.average_percent)
+                  ? `${report.average_percent}%`
+                  : '—'
+              }
               detail={
-                report.metrics
-                  ? `${report.metrics.completed_topic_assignments} / ${report.metrics.possible_topic_assignments} completed topic assignments`
-                  : 'Across eligible students'
+                assignments === 0
+                  ? 'No eligible student–topic assignments'
+                  : assignments > 0 &&
+                      Number.isFinite(
+                        report.metrics.completed_topic_assignments,
+                      )
+                    ? `${report.metrics.completed_topic_assignments} / ${assignments} completed topic assignments`
+                    : 'Completion totals are unavailable'
               }
             />
             <MetricCard
               label="Topics"
-              value={report.topics.length}
-              detail="Published roadmap version"
+              value={report.metrics?.topics ?? 'Unavailable'}
+              detail="Assigned roadmap version"
             />
           </div>
-          {report.students.length === 0 ? (
+          {report.metrics?.eligible_students === 0 ? (
             <EmptyState
-              title="No students have joined"
-              description="Share the cohort join code shown on the setup page."
+              title="No eligible students yet"
+              description="Share the join code and check that student memberships and accounts are active."
             />
           ) : (
             <section className="workspace-card learning-report">
               <h2>Student progress</h2>
-              {report.students.map((student) => (
-                <div className="learning-report-row" key={student.id}>
-                  <div>
-                    <strong>{student.name}</strong>
-                    <span>
-                      {student.completed} / {student.total} topics
-                    </span>
-                  </div>
-                  <ProgressBar
-                    value={student.percent}
-                    label={`${student.name} completion`}
-                  />
-                  <strong>{student.percent}%</strong>
-                </div>
-              ))}
+              <ReportProgressTable rows={report.students} students />
             </section>
           )}
           <section className="workspace-card learning-report">
             <h2>Topic completion</h2>
-            {report.topics.map((topic) => (
-              <div className="learning-report-row" key={topic.id}>
-                <div>
-                  <strong>{topic.title}</strong>
-                  <span>
-                    {topic.completed} / {topic.total} students
-                  </span>
-                </div>
-                <ProgressBar
-                  value={topic.percent}
-                  label={`${topic.title} completion`}
-                />
-                <strong>{topic.percent}%</strong>
-              </div>
-            ))}
+            <ReportProgressTable rows={report.topics} />
           </section>
         </>
       )}

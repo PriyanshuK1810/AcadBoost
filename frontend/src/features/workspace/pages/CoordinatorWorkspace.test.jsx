@@ -6,13 +6,14 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import * as api from '../learningApi'
 import CoordinatorDashboardPage from './CoordinatorDashboardPage'
 import StudentProgressPage from './StudentProgressPage'
 import TopicStatisticsPage from './TopicStatisticsPage'
 import AtRiskPage from './AtRiskPage'
+import ImportsPage from './ImportsPage'
 vi.mock('../learningApi', () => ({
   listOrganizations: vi.fn(),
   listCohorts: vi.fn(),
@@ -169,4 +170,130 @@ it('loads the requested organization and ignores an obsolete report when B fails
     await screen.findByRole('heading', { name: 'New lab' }),
   ).toBeInTheDocument()
   expect(api.getCohortProgress).toHaveBeenLastCalledWith('c2')
+})
+
+it('keeps a valid cohort in the URL and restores the previous selection with Back', async () => {
+  api.listCohorts.mockResolvedValue([
+    { id: 'c1', name: 'Actual lab', organization_id: 'o1' },
+    { id: 'c2', name: 'Next lab', organization_id: 'o1' },
+  ])
+  api.getCohortProgress.mockImplementation(async (id) => ({
+    ...report,
+    cohort_id: id,
+    cohort_name: id === 'c1' ? 'Actual lab' : 'Next lab',
+  }))
+  function Back() {
+    const navigate = useNavigate()
+    return <button onClick={() => navigate(-1)}>Go back</button>
+  }
+  render(
+    <MemoryRouter
+      initialEntries={['/app/coordinator?organizationId=o1&cohortId=c2']}
+    >
+      <Back />
+      <CoordinatorDashboardPage />
+    </MemoryRouter>,
+  )
+  expect(await screen.findByRole('heading', { name: 'Next lab' })).toBeVisible()
+  expect(
+    screen.getByRole('link', { name: /open cohort details/i }),
+  ).toHaveAttribute('href', '/app/coordinator/learning/c2?organizationId=o1')
+  fireEvent.change(screen.getByLabelText('Cohort'), { target: { value: 'c1' } })
+  expect(
+    await screen.findByRole('heading', { name: 'Actual lab' }),
+  ).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Go back' }))
+  expect(await screen.findByRole('heading', { name: 'Next lab' })).toBeVisible()
+})
+
+it('keeps out-of-scope cohort filters away from the progress API', async () => {
+  render(
+    <MemoryRouter
+      initialEntries={['/app/coordinator?organizationId=o1&cohortId=foreign']}
+    >
+      <CoordinatorDashboardPage />
+    </MemoryRouter>,
+  )
+  expect(
+    await screen.findByRole('status', { name: 'Cohort selection' }),
+  ).toHaveTextContent('The requested cohort is unavailable')
+  expect(
+    await screen.findByRole('heading', { name: 'Actual lab' }),
+  ).toBeVisible()
+  expect(api.getCohortProgress).toHaveBeenCalledExactlyOnceWith('c1')
+  fireEvent.click(screen.getByRole('button', { name: 'Reset cohort filter' }))
+  expect(
+    screen.queryByRole('status', { name: 'Cohort selection' }),
+  ).not.toBeInTheDocument()
+})
+
+it('labels an empty cohort separately from saved zero progress', async () => {
+  api.getCohortProgress.mockResolvedValue({
+    ...report,
+    average_percent: 0,
+    students: [],
+    metrics: {
+      ...report.metrics,
+      eligible_students: 0,
+      completed_topic_assignments: 0,
+      possible_topic_assignments: 0,
+    },
+  })
+  show(CoordinatorDashboardPage)
+  expect(
+    await screen.findByRole('heading', { name: 'No eligible students yet' }),
+  ).toBeVisible()
+  expect(
+    screen.getByText('No eligible student–topic assignments'),
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: /download|export/i }),
+  ).not.toBeInTheDocument()
+})
+
+it('keeps the roster unavailable state free of upload controls', () => {
+  show(ImportsPage)
+  expect(
+    screen.getByRole('heading', { name: 'CSV roster import is unavailable' }),
+  ).toBeVisible()
+  expect(document.querySelector('input[type=file]')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: /upload|import/i }),
+  ).not.toBeInTheDocument()
+})
+
+it('rejects a report for a different assigned version', async () => {
+  api.listCohorts.mockResolvedValue([
+    {
+      id: 'c1',
+      name: 'Actual lab',
+      organization_id: 'o1',
+      roadmap_version_id: 'pinned',
+    },
+  ])
+  api.getCohortProgress.mockResolvedValue({
+    ...report,
+    roadmap_version_id: 'different',
+  })
+  show(CoordinatorDashboardPage)
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'This cohort report could not be confirmed.',
+  )
+  expect(
+    screen.queryByText('1 / 4 completed topic assignments'),
+  ).not.toBeInTheDocument()
+})
+
+it('shows unavailable aggregate totals and retains the received student rows', async () => {
+  api.getCohortProgress.mockResolvedValue({ ...report, metrics: undefined })
+  show(StudentProgressPage)
+  expect(
+    await screen.findByText('Completion totals are unavailable'),
+  ).toBeVisible()
+  const search = screen.getByRole('searchbox', { name: 'Find a student' })
+  fireEvent.change(search, { target: { value: 'missing' } })
+  expect(screen.getByText('No students match this view.')).toBeVisible()
+  fireEvent.change(search, { target: { value: '' } })
+  expect(screen.getByRole('rowheader', { name: 'Arun' })).toBeVisible()
+  expect(screen.getByText('0 / 2 topics')).toBeVisible()
 })

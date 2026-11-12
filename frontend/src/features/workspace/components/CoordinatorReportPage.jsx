@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { listCohorts, listRoadmaps, getCohortProgress } from '../learningApi'
 import { useLiveResource } from '../hooks/useLiveResource'
 import {
@@ -8,7 +8,8 @@ import {
   withOrganization,
 } from '../hooks/useOrganizationScope'
 import LiveResourceState from './LiveResourceState'
-import { EmptyState, MetricCard, PageHeading, ProgressBar } from './WorkspaceUI'
+import { EmptyState, MetricCard, PageHeading } from './WorkspaceUI'
+import ReportProgressTable from './ReportProgressTable'
 
 const titles = {
   overview: 'Your cohorts at a glance',
@@ -65,8 +66,8 @@ export default function CoordinatorReportPage({ view = 'overview' }) {
 
 function OrganizationReport({ view, organization, scope, organizations }) {
   const organizationId = organization.id
-  const [selectedCohort, setCohort] = useState('')
-  const [search, setSearch] = useState('')
+  const [params, setParams] = useSearchParams()
+  const requestedCohort = params.get('cohortId')
   const loadCohorts = useCallback(
     async () =>
       (await listCohorts(organizationId)).filter(
@@ -85,25 +86,31 @@ function OrganizationReport({ view, organization, scope, organizations }) {
   )
   const roadmaps = useLiveResource(loadRoadmaps)
   const hasPublished = roadmaps.data?.some((r) => r.status === 'published')
-  const cohortId = String(
-    cohorts.data?.find((cohort) => cohort.id === selectedCohort)?.id ??
-      cohorts.data?.[0]?.id ??
-      '',
-  )
+  const matchedCohort = cohorts.data?.find(({ id }) => id === requestedCohort)
+  const cohort = matchedCohort ?? cohorts.data?.[0]
+  const cohortId = cohort?.id ?? ''
+  const assignedVersionId = cohort?.roadmap_version_id
+  function selectCohort(id) {
+    if (!cohorts.data?.some((item) => item.id === id)) return
+    const next = new URLSearchParams(params)
+    next.set('organizationId', organizationId)
+    next.set('cohortId', id)
+    setParams(next)
+  }
   const loadReport = useCallback(async () => {
     if (!cohortId) return null
     const report = await getCohortProgress(cohortId)
-    if (report.cohort_id && report.cohort_id !== cohortId)
+    if (
+      report?.cohort_id !== cohortId ||
+      (assignedVersionId && report.roadmap_version_id !== assignedVersionId)
+    )
       throw new Error('This cohort report could not be confirmed.')
     return report
-  }, [cohortId])
+  }, [assignedVersionId, cohortId])
   const resource = useLiveResource(loadReport)
   const report = resource.data
-  const students = (report?.students ?? []).filter(
-    (student) =>
-      (view !== 'support' || student.below_average) &&
-      student.name.toLowerCase().includes(search.toLowerCase()),
-  )
+  const metrics = report?.metrics
+  const assignments = metrics?.possible_topic_assignments
   return (
     <>
       <PageHeading
@@ -146,7 +153,7 @@ function OrganizationReport({ view, organization, scope, organizations }) {
               Cohort
               <select
                 value={cohortId}
-                onChange={(event) => setCohort(event.target.value)}
+                onChange={(event) => selectCohort(event.target.value)}
               >
                 {cohorts.data.map((cohort) => (
                   <option key={cohort.id} value={cohort.id}>
@@ -157,6 +164,25 @@ function OrganizationReport({ view, organization, scope, organizations }) {
             </label>
           )}
         </div>
+        {requestedCohort && cohorts.data && !matchedCohort && (
+          <div className="workspace-inline-actions">
+            <p role="status" aria-label="Cohort selection">
+              The requested cohort is unavailable in this organization.
+              {cohort && ' Showing the first available cohort.'}
+            </p>
+            <button
+              type="button"
+              className="workspace-button workspace-button-outline"
+              onClick={() => {
+                const next = new URLSearchParams(params)
+                next.delete('cohortId')
+                setParams(next, { replace: true })
+              }}
+            >
+              Reset cohort filter
+            </button>
+          </div>
+        )}
         {!cohorts.loading && !cohorts.error && !cohorts.data?.length && (
           <EmptyState
             title="No active cohorts"
@@ -194,7 +220,8 @@ function OrganizationReport({ view, organization, scope, organizations }) {
             <section className="workspace-card">
               <h2>{report.cohort_name}</h2>
               <p>
-                {report.roadmap_name} · Version {report.roadmap_version_number}
+                {report.roadmap_name} · Assigned Version{' '}
+                {report.roadmap_version_number ?? 'unavailable'}
               </p>
               <p>
                 All-time current completion. Includes active student accounts
@@ -207,7 +234,10 @@ function OrganizationReport({ view, organization, scope, organizations }) {
                 </button>
                 <Link
                   className="workspace-text-link"
-                  to={'/app/coordinator/learning/' + cohortId}
+                  to={withOrganization(
+                    '/app/coordinator/learning/' + cohortId,
+                    organizationId,
+                  )}
                 >
                   Open cohort details →
                 </Link>
@@ -216,25 +246,41 @@ function OrganizationReport({ view, organization, scope, organizations }) {
             <div className="workspace-metric-grid">
               <MetricCard
                 label="Eligible students"
-                value={report.metrics.eligible_students}
+                value={metrics?.eligible_students ?? 'Unavailable'}
                 detail="Active members and enrollments"
                 tone="green"
               />
               <MetricCard
                 label="Average completion"
-                value={report.average_percent + '%'}
-                detail={`${report.metrics.completed_topic_assignments} / ${report.metrics.possible_topic_assignments} completed topic assignments`}
+                value={
+                  assignments > 0 && Number.isFinite(report.average_percent)
+                    ? report.average_percent + '%'
+                    : '—'
+                }
+                detail={
+                  assignments === 0
+                    ? 'No eligible student–topic assignments'
+                    : assignments > 0 &&
+                        Number.isFinite(metrics.completed_topic_assignments)
+                      ? `${metrics.completed_topic_assignments} / ${assignments} completed topic assignments`
+                      : 'Completion totals are unavailable'
+                }
               />
               <MetricCard
                 label="Below cohort average"
                 value={
-                  report.students.filter((student) => student.below_average)
-                    .length
+                  Array.isArray(report.students) &&
+                  report.students.every(
+                    (student) => typeof student.below_average === 'boolean',
+                  )
+                    ? report.students.filter((student) => student.below_average)
+                        .length
+                    : 'Unavailable'
                 }
                 detail="A prompt for a personal check-in"
               />
             </div>
-            {!report.students.length && (
+            {metrics?.eligible_students === 0 && (
               <EmptyState
                 title="No eligible students yet"
                 description="Share the join code, and check that student memberships and accounts are active."
@@ -242,69 +288,55 @@ function OrganizationReport({ view, organization, scope, organizations }) {
             )}
             {view === 'support' && (
               <p>
-                Support signal: completion is below the exact cohort average.
-                This is not an inactivity or risk prediction. Ask the student
-                about their circumstances before taking action.
+                Suggested check-ins use the server’s exact cohort average.
+                Displayed percentages are rounded.
               </p>
             )}
             {['overview', 'students', 'support'].includes(view) && (
-              <section className="workspace-card learning-report">
-                <h2>
-                  {view === 'support'
-                    ? 'Suggested check-ins'
-                    : 'Student progress'}
-                </h2>
-                <label>
-                  Find a student
-                  <input
-                    type="search"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </label>
-                {students.map((student) => (
-                  <div className="learning-report-row" key={student.id}>
-                    <div>
-                      <strong>{student.name}</strong>
-                      <span>
-                        {student.completed} / {student.total} topics
-                      </span>
-                    </div>
-                    <ProgressBar
-                      value={student.percent}
-                      label={student.name + ' completion'}
-                    />
-                    <strong>{student.percent}%</strong>
-                  </div>
-                ))}
-                {report.students.length > 0 && !students.length && (
-                  <p>No students match this view.</p>
-                )}
-              </section>
+              <StudentReport
+                rows={report.students}
+                support={view === 'support'}
+              />
             )}
             {['overview', 'topics'].includes(view) && (
               <section className="workspace-card learning-report">
                 <h2>Topic completion</h2>
-                {report.topics.map((topic) => (
-                  <div className="learning-report-row" key={topic.id}>
-                    <div>
-                      <strong>{topic.title}</strong>
-                      <span>
-                        {topic.completed} / {topic.total} eligible students
-                      </span>
-                    </div>
-                    <ProgressBar
-                      value={topic.percent}
-                      label={topic.title + ' completion'}
-                    />
-                    <strong>{topic.percent}%</strong>
-                  </div>
-                ))}
+                <ReportProgressTable rows={report.topics} />
               </section>
             )}
           </>
         )}
       </>
     </>
+  )
+}
+
+function StudentReport({ rows, support }) {
+  const [search, setSearch] = useState('')
+  const students = Array.isArray(rows)
+    ? rows.filter(
+        (student) =>
+          (!support || student.below_average) &&
+          student.name.toLowerCase().includes(search.trim().toLowerCase()),
+      )
+    : undefined
+  return (
+    <section className="workspace-card learning-report">
+      <h2>{support ? 'Suggested check-ins' : 'Student progress'}</h2>
+      {students && rows.length > 0 && (
+        <label>
+          Find a student
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+      )}
+      <ReportProgressTable rows={students} students />
+      {students && rows.length > 0 && !students.length && (
+        <p role="status">No students match this view.</p>
+      )}
+    </section>
   )
 }
