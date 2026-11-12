@@ -8,8 +8,30 @@ const DISCOVERY_ENDPOINT = 'https://accounts.google.com/.well-known/openid-confi
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const JWKS_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/certs';
 const INVALID = 'Invalid Google authentication response';
+const CALLBACK_PATH = '/api/v1/auth/google/callback';
+const CORRELATION_COOKIE = '__Secure-outpost_google_correlation';
+const STATE_TTL_SECONDS = 600;
+const CORRELATION_COOKIE_OPTIONS = { path: CALLBACK_PATH, secure: true, httpOnly: true, sameSite: 'lax' };
+const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const stateKey = (state) => `outpost:oauth-state:v1:${state}`;
 const secret = () => randomBytes(32).toString('base64url');
+const digest = (value) => createHash('sha256').update(value).digest('hex');
+
+// Check the proof and consume state together. A mismatch leaves the record and TTL intact.
+const consumeState = `
+  local raw = redis.pcall('GET', KEYS[1])
+  if type(raw) ~= 'string' then return nil end
+  local ok, record = pcall(cjson.decode, raw)
+  if not ok or type(record) ~= 'table' or record.correlationDigest ~= ARGV[1] then
+    return nil
+  end
+  local function validSecret(value)
+    return type(value) == 'string' and #value == 43 and string.match(value, '^[A-Za-z0-9_%-]+$')
+  end
+  if not validSecret(record.nonce) or not validSecret(record.codeVerifier) then return nil end
+  redis.call('DEL', KEYS[1])
+  return { record.nonce, record.codeVerifier }
+`;
 
 async function getJson(fetchImpl, url, options) {
   let response;
@@ -107,6 +129,8 @@ export function registerGoogleRoutes(app, {
       throw notReady('Google authentication is not configured');
     }
     if (!redisClient) throw notReady('Google authentication is unavailable');
+    const correlation = secret();
+    const correlationDigest = digest(correlation);
     let state, nonce, codeVerifier;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       state = secret();
@@ -114,7 +138,8 @@ export function registerGoogleRoutes(app, {
       codeVerifier = secret();
       let stored;
       try {
-        stored = await redisClient.set(stateKey(state), JSON.stringify({ nonce, codeVerifier }), { EX: 600, NX: true });
+        stored = await redisClient.set(stateKey(state), JSON.stringify({ nonce, codeVerifier, correlationDigest }),
+          { EX: STATE_TTL_SECONDS, NX: true });
       } catch {
         throw notReady('Google authentication is unavailable');
       }
@@ -133,32 +158,37 @@ export function registerGoogleRoutes(app, {
       code_challenge: createHash('sha256').update(codeVerifier).digest('base64url'),
       code_challenge_method: 'S256',
     })) url.searchParams.set(key, value);
+    response.cookie(CORRELATION_COOKIE, correlation, {
+      ...CORRELATION_COOKIE_OPTIONS, maxAge: STATE_TTL_SECONDS * 1000,
+    });
     response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }).redirect(302, url.toString());
   });
 
-  app.get('/api/v1/auth/google/callback', async (request, response) => {
+  app.get(CALLBACK_PATH, async (request, response) => {
+    response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
     if (!settings.googleClientId || !settings.googleClientSecret ||
         !settings.googleRedirectUri || !settings.authSigningKey) {
       throw notReady('Google authentication is not configured');
     }
     if (!redisClient) throw notReady('Google authentication is unavailable');
     const { state = '', code = '', iss = '' } = request.query;
-    if (typeof state !== 'string' || state.length > 512 ||
+    const proof = request.cookies?.[CORRELATION_COOKIE];
+    if (typeof state !== 'string' || !secretPattern.test(state) ||
+        typeof proof !== 'string' || !secretPattern.test(proof) ||
         typeof code !== 'string' || code.length > 4096 ||
         typeof iss !== 'string' || iss.length > 256) throw unauthorized(INVALID);
-    let raw;
-    try { raw = await redisClient.getDel(stateKey(state)); }
-    catch { throw notReady('Google authentication is unavailable'); }
-    if (!raw || !code || !['accounts.google.com', 'https://accounts.google.com'].includes(iss)) {
-      throw unauthorized(INVALID);
-    }
     let correlation;
-    try { correlation = JSON.parse(raw); }
-    catch { throw unauthorized(INVALID); }
-    if (typeof correlation.nonce !== 'string' || typeof correlation.codeVerifier !== 'string') {
+    try {
+      correlation = await redisClient.eval(consumeState, { keys: [stateKey(state)], arguments: [digest(proof)] });
+    }
+    catch { throw notReady('Google authentication is unavailable'); }
+    if (!correlation) throw unauthorized(INVALID);
+    response.clearCookie(CORRELATION_COOKIE, CORRELATION_COOKIE_OPTIONS);
+    if (!code || !['accounts.google.com', 'https://accounts.google.com'].includes(iss)) {
       throw unauthorized(INVALID);
     }
-    const principal = await verifiedPrincipal(settings, code, correlation.nonce, correlation.codeVerifier, fetchImpl);
+    const [nonce, codeVerifier] = correlation;
+    const principal = await verifiedPrincipal(settings, code, nonce, codeVerifier, fetchImpl);
     const credentials = await prisma.$transaction(async (tx) => {
       const user = await resolveGoogleUser(tx, principal);
       return issueSession({
@@ -170,7 +200,6 @@ export function registerGoogleRoutes(app, {
       maxAge: 30 * 24 * 60 * 60 * 1000,
       path: '/api/v1/auth', secure: true, httpOnly: true, sameSite: 'strict',
     });
-    response.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
     response.json({ access_token: credentials.access, token_type: 'bearer', expires_in: 900 });
   });
 }
