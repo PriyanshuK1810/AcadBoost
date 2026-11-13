@@ -322,3 +322,31 @@ export function setTopicProgress(topicId, completed) {
 export function getCohortProgress(cohortId) {
   return apiRequest(`/cohorts/${encodeURIComponent(cohortId)}/progress`)
 }
+
+export function listMentorCohorts(organizationId) {
+  return apiRequest(
+    `/organizations/${encodeURIComponent(organizationId)}/mentor/cohorts`,
+  )
+}
+export function getMentorCohort(organizationId, cohortId) {
+  return apiRequest(
+    `/organizations/${encodeURIComponent(organizationId)}/mentor/cohorts/${encodeURIComponent(cohortId)}`,
+  )
+}
+export function listMentorAssignments(organizationId) {
+  return apiRequest(
+    `/organizations/${encodeURIComponent(organizationId)}/mentor-assignments`,
+  )
+}
+export function assignMentor(organizationId, cohortId, membershipId) {
+  return apiRequest(
+    `/organizations/${encodeURIComponent(organizationId)}/cohorts/${encodeURIComponent(cohortId)}/mentor-assignments/${encodeURIComponent(membershipId)}`,
+    { method: 'PUT' },
+  )
+}
+export function revokeMentorAssignment(organizationId, cohortId, membershipId) {
+  return apiRequest(
+    `/organizations/${encodeURIComponent(organizationId)}/cohorts/${encodeURIComponent(cohortId)}/mentor-assignments/${encodeURIComponent(membershipId)}`,
+    { method: 'DELETE' },
+  )
+}

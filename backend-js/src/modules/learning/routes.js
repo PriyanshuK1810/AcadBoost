@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { registerRoadmapRoutes } from './roadmapRoutes.js';
 import { registerActivityRoutes } from './activityRoutes.js';
+import { registerMentorRoutes } from './mentorRoutes.js';
 import { AppError, conflict, forbidden, notFound, notReady } from '../../core/errors.js';
 import {
   hasAccountRoleCompatibility,
@@ -159,8 +160,21 @@ function uuidParam(request, name) {
   return parse(uuid, request.params[name], 'path');
 }
 
-export function registerLearningRoutes(app, { prisma, settings: _settings, requireUser, redisClient }) {
+async function eligibleStudentIds(prisma, cohort) {
+  const enrollments = await prisma.cohortEnrollment.findMany({
+    where: { cohortId: cohort.id, status: 'active' }, select: { userId: true },
+  });
+  const memberships = enrollments.length ? await prisma.organizationMembership.findMany({
+    where: { organizationId: cohort.organizationId, userId: { in: enrollments.map((row) => row.userId) },
+      role: 'student', status: 'active' },
+    select: { userId: true },
+  }) : [];
+  return memberships.map((row) => row.userId);
+}
+
+export function registerLearningRoutes(app, { prisma, settings, requireUser, redisClient }) {
   registerRoadmapRoutes(app, { prisma, requireUser });
+  registerMentorRoutes(app, { prisma, settings, requireUser, uuidParam, lockOrganization, roadmapTree, eligibleStudentIds, percent });
   app.post('/api/v1/organizations', requireUser, async (request, response) => {
     const data = parse(organizationInput, request.body);
     coordinator(request.user);
@@ -654,14 +668,10 @@ export function registerLearningRoutes(app, { prisma, settings: _settings, requi
     });
     response.set('Cache-Control', 'no-store');
     const list = await topics(prisma, cohort.roadmapVersionId);
-    const enrollments = await prisma.cohortEnrollment.findMany({ where: { cohortId, status: 'active' } });
-    const memberships = enrollments.length ? await prisma.organizationMembership.findMany({
-      where: { organizationId: cohort.organizationId, userId: { in: enrollments.map((row) => row.userId) },
-        role: 'student', status: 'active' },
-    }) : [];
-    const users = memberships.length
+    const eligibleIds = await eligibleStudentIds(prisma, cohort);
+    const users = eligibleIds.length
       ? await prisma.user.findMany({ where: {
-          id: { in: memberships.map((row) => row.userId) }, status: 'active', accountType: 'student',
+          id: { in: eligibleIds }, status: 'active', accountType: 'student',
         } })
       : [];
     users.sort((a, b) => a.displayName < b.displayName ? -1 : a.displayName > b.displayName ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

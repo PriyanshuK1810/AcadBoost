@@ -36,6 +36,8 @@ vi.mock('../review/reviewApi', () => ({
 }))
 vi.mock('./learningApi', () => ({
   listOrganizations: vi.fn(),
+  listMentorCohorts: vi.fn(),
+  getMentorCohort: vi.fn(),
   getMyLearning: vi.fn(),
   setTopicProgress: vi.fn(),
   joinCohort: vi.fn(),
@@ -95,6 +97,7 @@ function renderRoadmap() {
 beforeEach(() => {
   vi.clearAllMocks()
   learningApi.listOrganizations.mockResolvedValue([])
+  learningApi.listMentorCohorts.mockResolvedValue([])
   vi.mocked(reviewApi.getReviewOverview).mockResolvedValue(overview)
 })
 it('shows the actual selected organization in the coordinator sidebar', async () => {

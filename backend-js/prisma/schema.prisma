@@ -94,6 +94,7 @@ model CohortEnrollment {
 }
 
 model Cohort {
+  mentorAssignments MentorCohortAssignment[]
   deadlines CohortWeekDeadline[]
   deadlineChanges DeadlineChange[]
   id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -113,6 +114,7 @@ model Cohort {
 
   @@index([organizationId], map: "ix_cohorts_organization_id")
   @@index([roadmapVersionId], map: "ix_cohorts_roadmap_version_id")
+  @@unique([id, organizationId], map: "uq_cohorts_id_organization")
   @@map("cohorts")
 }
 
@@ -146,6 +148,7 @@ model OAuthIdentity {
 }
 
 model OrganizationMembership {
+  mentorAssignments MentorCohortAssignment[]
   id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String        @db.Uuid @map("organization_id")
   userId         String        @db.Uuid @map("user_id")
@@ -156,6 +159,7 @@ model OrganizationMembership {
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([organizationId, userId], map: "uq_organization_membership")
+  @@unique([id, organizationId], map: "uq_organization_memberships_id_organization")
   @@index([organizationId], map: "ix_organization_memberships_organization_id")
   @@index([userId], map: "ix_organization_memberships_user_id")
   @@map("organization_memberships")
@@ -359,6 +363,8 @@ model Topic {
 }
 
 model User {
+  mentorAssignmentsCreated MentorCohortAssignment[] @relation("MentorAssignmentActor")
+  mentorAssignmentsRevoked MentorCohortAssignment[] @relation("MentorRevocationActor")
   submittedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapSubmitter")
   decidedRoadmapReviews RoadmapReviewAttempt[] @relation("RoadmapReviewer")
   auditEvents AuditEvent[]
@@ -407,6 +413,27 @@ model Week {
 
   @@index([phaseId], map: "ix_weeks_phase_id")
   @@map("weeks")
+}
+
+model MentorCohortAssignment {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String                @db.Uuid @map("organization_id")
+  cohortId       String                @db.Uuid @map("cohort_id")
+  membershipId   String                @db.Uuid @map("membership_id")
+  assignedAt     DateTime              @default(now()) @db.Timestamptz(6) @map("assigned_at")
+  assignedBy     String                @db.Uuid @map("assigned_by")
+  revokedAt      DateTime?             @db.Timestamptz(6) @map("revoked_at")
+  revokedBy      String?               @db.Uuid @map("revoked_by")
+  cohort         Cohort                @relation(fields: [cohortId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict, map: "fk_mentor_cohort_assignments_cohort_organization")
+  membership     OrganizationMembership @relation(fields: [membershipId, organizationId], references: [id, organizationId], onDelete: Restrict, onUpdate: Restrict, map: "fk_mentor_cohort_assignments_membership_organization")
+  assigningUser  User                  @relation("MentorAssignmentActor", fields: [assignedBy], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_mentor_cohort_assignments_assigned_by")
+  revokingUser   User?                 @relation("MentorRevocationActor", fields: [revokedBy], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "fk_mentor_cohort_assignments_revoked_by")
+
+  @@index([organizationId, cohortId], map: "ix_mentor_cohort_assignments_org_cohort")
+  @@index([membershipId, organizationId], map: "ix_mentor_cohort_assignments_membership_org")
+  @@index([assignedBy], map: "ix_mentor_cohort_assignments_assigned_by")
+  @@index([revokedBy], map: "ix_mentor_cohort_assignments_revoked_by")
+  @@map("mentor_cohort_assignments")
 }
 
 model ActivityEvent {

@@ -34,7 +34,7 @@ import {
   withOrganization,
 } from '../hooks/useOrganizationScope'
 import ForestLandscapeArtwork from './ForestLandscapeArtwork'
-import { PageHeading } from './WorkspaceUI'
+import MentorWorkspace from './MentorWorkspace'
 const studentLinks = [
   { to: '/app/student', label: 'Overview', end: true },
   { to: '/app/student/learning', label: 'My cohorts' },
@@ -429,26 +429,11 @@ export default function WorkspaceShell() {
                 </button>
               </div>
             ) : staffRoute && mentorView ? (
-              <>
-                <PageHeading
-                  eyebrow="Workspace / Mentoring"
-                  title="Mentor workspace"
-                  description={organization.name}
-                />
-                <section
-                  className="workspace-card"
-                  aria-labelledby="mentor-access-title"
-                >
-                  <h2 id="mentor-access-title">
-                    Assigned-cohort access is unavailable
-                  </h2>
-                  <p>
-                    Your Mentor membership is active. Acadboost does not
-                    currently provide access to assigned cohorts or learner
-                    progress for this role.
-                  </p>
-                </section>
-              </>
+              <MentorWorkspace
+                key={organization.id}
+                organizationId={organization.id}
+                organizationName={organization.name}
+              />
             ) : (
               <Outlet />
             )}

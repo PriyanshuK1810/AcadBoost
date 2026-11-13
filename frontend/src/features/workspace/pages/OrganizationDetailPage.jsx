@@ -11,6 +11,7 @@ import {
 } from '../learningApi'
 import { useWorkspace } from '../hooks/useWorkspace'
 import { PageHeading } from '../components/WorkspaceUI'
+import MentorAssignments from '../components/MentorAssignments'
 
 export default function OrganizationDetailPage() {
   const { organizationId } = useParams()
@@ -57,6 +58,7 @@ function OrganizationDetails({ organizationId }) {
   const pending = useRef(false)
   const [organization, setOrganization] = useState(null)
   const [members, setMembers] = useState([])
+  const [membershipRevision, setMembershipRevision] = useState(0)
   const [invitations, setInvitations] = useState([])
   const [email, setEmail] = useState('')
   const [role, setRole] = useState('coordinator')
@@ -147,6 +149,7 @@ function OrganizationDetails({ organizationId }) {
       await updateOrganizationMember(organizationId, member.id, changes)
       if (!mounted.current) return
       setNotice('Member updated.')
+      setMembershipRevision((revision) => revision + 1)
       await refreshAfterChange(listOrganizationMembers, setMembers)
     })
   }
@@ -236,7 +239,17 @@ function OrganizationDetails({ organizationId }) {
             <a className="workspace-text-link" href="#staff-invitations-title">
               Staff invitations
             </a>
+            <a
+              className="workspace-text-link"
+              href="#mentor-assignments-heading"
+            >
+              Mentor assignments
+            </a>
           </nav>
+          <MentorAssignments
+            key={membershipRevision}
+            organizationId={organizationId}
+          />
           <section
             className="workspace-card"
             aria-labelledby="organization-members-title"

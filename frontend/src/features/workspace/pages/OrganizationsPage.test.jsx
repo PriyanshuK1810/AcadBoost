@@ -19,6 +19,9 @@ vi.mock('../learningApi', () => ({
   getOrganization: vi.fn(),
   listOrganizationMembers: vi.fn(),
   listOrganizationInvitations: vi.fn(),
+  listMentorAssignments: vi.fn(),
+  assignMentor: vi.fn(),
+  revokeMentorAssignment: vi.fn(),
   createOrganizationInvitation: vi.fn(),
   revokeOrganizationInvitation: vi.fn(),
   acceptOrganizationInvitation: vi.fn(),
@@ -56,6 +59,11 @@ beforeEach(() => {
     },
   ])
   vi.mocked(learningApi.listOrganizationInvitations).mockResolvedValue([])
+  vi.mocked(learningApi.listMentorAssignments).mockResolvedValue({
+    assignments: [],
+    mentors: [],
+    cohorts: [],
+  })
 })
 
 it('lets an owner issue an invitation and displays its one-time code', async () => {
@@ -102,6 +110,17 @@ it('keeps the full member identity and Owner controls together for long names an
     status: 'active',
   }
   learningApi.listOrganizationMembers.mockResolvedValue([member])
+  learningApi.listMentorAssignments
+    .mockResolvedValueOnce({
+      assignments: [],
+      mentors: [],
+      cohorts: [],
+    })
+    .mockResolvedValueOnce({
+      assignments: [],
+      mentors: [{ id: member.id, display_name: name }],
+      cohorts: [],
+    })
   learningApi.updateOrganizationMember.mockResolvedValue({
     ...member,
     role: 'mentor',
@@ -120,6 +139,7 @@ it('keeps the full member identity and Owner controls together for long names an
   expect(screen.getByText(email)).toBeVisible()
   expect(screen.getByText('coordinator · active')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Deactivate' })).toBeEnabled()
+  await screen.findByLabelText('Mentor')
   const role = screen.getByRole('combobox', { name: `Role for ${name}` })
   fireEvent.change(role, { target: { value: 'mentor' } })
   expect(learningApi.updateOrganizationMember).toHaveBeenCalledWith(
@@ -127,6 +147,7 @@ it('keeps the full member identity and Owner controls together for long names an
     'membership-2',
     { role: 'mentor' },
   )
+  expect(await screen.findByRole('option', { name })).toBeInTheDocument()
 })
 
 it('lets a coordinator accept a staff invitation', async () => {
